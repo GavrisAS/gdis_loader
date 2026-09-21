@@ -1,4 +1,4 @@
-.PHONY: sync lint format format-check typecheck test check run clean audit
+.PHONY: sync lint format format-check typecheck test check run version clean audit
 
 sync:
 	uv sync --locked
@@ -26,6 +26,9 @@ check:
 
 run:
 	uv run gdis-loader
+
+version:
+	uv run python scripts/next_version.py
 
 clean:
 	rm -rf build dist .pytest_cache .ruff_cache .ty_cache htmlcov audit

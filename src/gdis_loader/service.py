@@ -67,7 +67,7 @@ class ServiceResult:
             f"Однозначно сопоставлено: {report.matched}",
             f"Неоднозначно: {report.ambiguous}",
             f"Без ГДИ: {report.no_gdi}",
-            f"Без ЛХА: {report.without_lha}",
+            f"Без выбранных значений ЛХА: {report.without_lha}",
             f"Подготовлено строк: {report.rows_prepared}",
             f"Записано строк: {report.rows_written}",
             f"Ошибок: {self.error_count}",
@@ -212,21 +212,22 @@ def _build_target_rows(
                 report.with_lha_vgf += 1
             if all(value is None for value in (cl_current, cl_previous, vgf_current, vgf_previous)):
                 report.without_lha += 1
-                _append_issues(
-                    report,
-                    (
-                        DiagnosticIssue(
-                            code="LHA_NOT_FOUND",
-                            severity=IssueSeverity.INFO,
-                            message=(
-                                "Для однозначно сопоставленной скважины не найдено "
-                                "валидной точки ЛХА."
+                if lha_values is None or not lha_values.issues:
+                    _append_issues(
+                        report,
+                        (
+                            DiagnosticIssue(
+                                code="LHA_NOT_FOUND",
+                                severity=IssueSeverity.INFO,
+                                message=(
+                                    "Для однозначно сопоставленной скважины не найдено "
+                                    "валидной точки ЛХА."
+                                ),
+                                source="lha",
+                                well_id=fund_well.base_well_id,
                             ),
-                            source="lha",
-                            well_id=fund_well.base_well_id,
                         ),
-                    ),
-                )
+                    )
             target_rows.append(
                 TargetRow(
                     well=record.raw_well_name,
@@ -266,7 +267,6 @@ def _build_target_rows(
         report.without_lha += 1
     report.rows_prepared = len(target_rows)
     if len(target_rows) > 100:
-        report.warnings.append("DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY")
         _append_issues(
             report,
             (
@@ -343,9 +343,6 @@ def run_update(paths: SourcePaths, log_path: Path | None = None) -> ServiceResul
             paths.calculator, paths.output, target_rows
         )
         report.rows_written = writer_result.rows_written
-        for warning in writer_result.warnings:
-            if warning not in report.warnings:
-                report.warnings.append(warning)
         report.output_path = str(paths.output.resolve())
         _write_report(report, Path(report.diagnostic_path))
         LOGGER.info("Обновление завершено: %s", report.output_path)

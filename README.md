@@ -32,7 +32,11 @@ uv run pytest
 make sync
 make check
 make run
+make version
 ```
+
+`make version` только показывает следующую двухкомпонентную версию `vMAJOR.MINOR`
+по релизным тегам и не изменяет Git.
 
 Запуск GUI:
 
@@ -84,19 +88,36 @@ GUI сохраняет атомарно в `config.toml`; в PyInstaller-сбо�
 ожидаемые Excel placeholders (`#DIV/0!`, `#REF!`, пустое значение, `-`) и
 исторические проблемы источников попадают только в компактные `INFO`-сводки.
 
+В JSON-отчете `warnings` содержит только тексты диагностик уровня `WARNING`, по
+одному элементу на issue. Поле `without_lha` означает отсутствие выбранных
+итоговых значений Cl/ВГФ и не доказывает физическое отсутствие записей ЛХА:
+например, оно может включать строку с конфликтом одинакового timestamp.
+
 При фонде больше 100 строк summary содержит отдельное предупреждение, а после
 `update` GUI показывает его в заметном окне. Строки 101+ находятся в `Данные`, но
 формулы листов `Расчет` и `Рейтинг` для них пока не рассчитываются.
 
 ## Получение Windows-сборки
 
-Локальный Windows-ПК для сборки не требуется. GitHub Actions использует
-`uv.lock`, Python 3.14 и PyInstaller `onedir`:
+Локальный Windows-ПК для сборки EXE не требуется. Каждый обычный push в `main`
+запускает GitHub Actions на Windows и проходит `uv sync --locked`, проверки,
+PyInstaller `onedir`, frozen smoke-test и публикацию релиза:
 
-1. Тестовая сборка: GitHub → **Actions** → **Build Windows** → **Run workflow**;
-   скачайте artifact `GDIS_DataLoader-windows-x64`.
-2. Релиз: создайте и отправьте тег `vX.Y.Z`. Workflow соберёт и проверит EXE,
-   а ZIP появится на странице GitHub Releases и среди artifacts.
+```text
+push в main -> Windows CI -> tests -> PyInstaller onedir -> smoke-test
+           -> следующий MINOR -> GitHub Release
+```
+
+Workflow использует только теги и релизы формата `vMAJOR.MINOR`: `MAJOR`
+сохраняется (или меняется вручную в проекте), а `MINOR` увеличивается ровно на
+один. `PATCH` не используется, commit с bump версии не создаётся. Тег всегда
+указывает на commit, запустивший workflow. `workflow_dispatch` на `main` повторяет
+публикацию; на другой ветке выполняется только тестовая сборка без tag/release.
+
+Для ручной проверки сборки откройте GitHub → **Actions** → **Build Windows** →
+**Run workflow** и выберите не-main ветку; standalone ZIP будет доступен как
+artifact `GDIS_DataLoader-windows-x64`. Release asset получает имя
+`GDIS_DataLoader-vMAJOR.MINOR-windows-x64.zip`.
 
 Перед архивированием workflow запускает `GDIS_DataLoader.exe --smoke-test`.
 Smoke-test импортирует PySide6-Essentials, openpyxl, service и writer без

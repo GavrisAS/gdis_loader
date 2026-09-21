@@ -96,7 +96,11 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
             header_row + 1,
         ):
             values = tuple(row)
-            if row_is_empty(values):
+            identity_values = tuple(
+                row_value(values, columns, name)
+                for name in ("field", "well", "plast", "study_date")
+            )
+            if row_is_empty(identity_values):
                 continue
 
             raw_field_value = row_value(values, columns, "field")

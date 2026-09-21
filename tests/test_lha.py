@@ -218,6 +218,55 @@ def test_lha_reader_aggregates_expected_missing_values_and_notes(tmp_path: Path)
     )
 
 
+def test_lha_ignores_row_with_only_non_identity_value(tmp_path: Path) -> None:
+    path = tmp_path / "lha.xlsm"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "БД Сибнефтегаз"
+    worksheet.append(
+        [
+            "Месторождение",
+            "Номер скважины",
+            "Пласт",
+            "Дата и время исследования",
+            "Данные ЛХА, CL-, мг/дм3",
+            "ВГФ, г/м3",
+        ]
+    )
+    worksheet.append([None, None, None, None, 42, None])
+    workbook.save(path)
+
+    records, issues = read_lha(path)
+
+    assert records == ()
+    assert not any(issue.code.startswith("LHA_INVALID_") for issue in issues)
+
+
+def test_lha_partially_filled_identity_row_keeps_diagnostics(tmp_path: Path) -> None:
+    path = tmp_path / "lha.xlsm"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "БД Сибнефтегаз"
+    worksheet.append(
+        [
+            "Месторождение",
+            "Номер скважины",
+            "Пласт",
+            "Дата и время исследования",
+            "Данные ЛХА, CL-, мг/дм3",
+            "ВГФ, г/м3",
+        ]
+    )
+    worksheet.append(["Береговое", 11, None, None, 42, None])
+    workbook.save(path)
+
+    records, issues = read_lha(path)
+    codes = {issue.code for issue in issues}
+
+    assert len(records) == 1
+    assert {"LHA_INVALID_DATE", "LHA_INVALID_PLAST"} <= codes
+
+
 def test_lha_metrics_have_independent_timestamp_conflicts() -> None:
     latest = datetime(2026, 1, 3)
     index = LhaIndex(

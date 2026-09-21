@@ -301,7 +301,13 @@ class TargetRow:
 
 @dataclass(slots=True)
 class LoadReport:
-    """Machine-readable summary of one validation or update run."""
+    """Machine-readable summary of one validation or update run.
+
+    ``without_lha`` counts rows without selected Cl/VGF values.  It can include
+    rows whose source records were found but could not be selected because of a
+    diagnostic conflict; it does not prove that LHA records are physically
+    absent.
+    """
 
     timestamp: str
     app_version: str
