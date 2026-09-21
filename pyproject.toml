@@ -58,6 +58,9 @@ line-ending = "lf"
 
 [tool.ty]
 
+[tool.ty.rules]
+unused-ignore-comment = "ignore"
+
 [tool.ty.environment]
 python-version = "3.14"
 root = ["./src"]

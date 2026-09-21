@@ -7,15 +7,16 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6 import QtCore  # ty: ignore[unresolved-import]
-from PySide6.QtCore import (  # ty: ignore[unresolved-import]
+from PySide6 import QtCore  # ty: ignore[unresolved-import, unused-ignore-comment]
+from PySide6.QtCore import (  # ty: ignore[unresolved-import, unused-ignore-comment]
     QObject,
     QThread,
     QTimer,
     Signal,
     Slot,
 )
-from PySide6.QtWidgets import (  # ty: ignore[unresolved-import]
+from PySide6.QtGui import QCloseEvent  # ty: ignore[unresolved-import, unused-ignore-comment]
+from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-comment]
     QApplication,
     QFileDialog,
     QGridLayout,
@@ -161,8 +162,7 @@ class LoaderWindow(QMainWindow):
         return ""
 
     def _browse(self, name: str) -> None:
-        spec = next(spec for key, *spec in _FILE_FIELDS if key == name)
-        _label, file_filter, is_output = spec
+        _, label, file_filter, is_output = next(spec for spec in _FILE_FIELDS if spec[0] == name)
         initial_directory = self._initial_directory(name)
         if is_output:
             selected, _ = QFileDialog.getSaveFileName(
@@ -174,7 +174,7 @@ class LoaderWindow(QMainWindow):
         else:
             selected, _ = QFileDialog.getOpenFileName(
                 self,
-                f"Выберите: {_label}",
+                f"Выберите: {label}",
                 initial_directory,
                 file_filter,
             )
@@ -292,7 +292,7 @@ class LoaderWindow(QMainWindow):
     def _update(self) -> None:
         self._start(run_update, "Обновление данных")
 
-    def closeEvent(self, event: QtCore.QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._busy:
             event.ignore()
             return

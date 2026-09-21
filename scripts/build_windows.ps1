@@ -1,11 +1,25 @@
 $ErrorActionPreference = "Stop"
 
+function Assert-NativeExitCode {
+    param([string]$Step)
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Step failed with exit code $LASTEXITCODE"
+    }
+}
+
 uv sync --locked
+Assert-NativeExitCode "uv sync --locked"
 uv run ruff check .
+Assert-NativeExitCode "ruff check"
 uv run ruff format --check .
+Assert-NativeExitCode "ruff format --check"
 uv run ty check
+Assert-NativeExitCode "ty check"
 uv run pytest
+Assert-NativeExitCode "pytest"
 uv run python -c "from PySide6 import QtCore, QtWidgets; print(QtCore.qVersion())"
+Assert-NativeExitCode "PySide6 import"
 
 uv run pyinstaller `
   --noconfirm `
@@ -16,15 +30,14 @@ uv run pyinstaller `
   --paths src `
   --add-data "config.example.toml;." `
   src/gdis_loader/__main__.py
+Assert-NativeExitCode "PyInstaller"
 
 $Executable = "dist/GDIS_DataLoader/GDIS_DataLoader.exe"
 if (-not (Test-Path $Executable)) {
     throw "PyInstaller did not create $Executable"
 }
 & $Executable --smoke-test
-if ($LASTEXITCODE -ne 0) {
-    throw "Frozen GUI smoke-test failed with exit code $LASTEXITCODE"
-}
+Assert-NativeExitCode "Frozen GUI smoke-test"
 
 $ZipPath = "dist/GDIS_DataLoader-windows-x64.zip"
 if (Test-Path $ZipPath) {

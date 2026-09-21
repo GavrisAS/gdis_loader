@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication  # ty: ignore[unresolved-import]
+from PySide6.QtWidgets import QApplication  # ty: ignore[unresolved-import, unused-ignore-comment]
 
 import gdis_loader.gui.app as gui_app
 from gdis_loader.domain.models import LoadReport, SourcePaths
