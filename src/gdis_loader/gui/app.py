@@ -6,6 +6,7 @@ import logging
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6 import QtCore  # ty: ignore[unresolved-import, unused-ignore-comment]
 from PySide6.QtCore import (  # ty: ignore[unresolved-import, unused-ignore-comment]
@@ -15,7 +16,6 @@ from PySide6.QtCore import (  # ty: ignore[unresolved-import, unused-ignore-comm
     Signal,
     Slot,
 )
-from PySide6.QtGui import QCloseEvent  # ty: ignore[unresolved-import, unused-ignore-comment]
 from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-comment]
     QApplication,
     QFileDialog,
@@ -30,6 +30,9 @@ from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-c
     QVBoxLayout,
     QWidget,
 )
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent  # ty: ignore[unresolved-import, unused-ignore-comment]
 
 from gdis_loader.config import AppConfig, config_path, load_config, save_config
 from gdis_loader.domain.models import SourcePaths
