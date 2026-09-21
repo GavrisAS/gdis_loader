@@ -32,6 +32,10 @@ jobs:
       - name: Sync
         run: uv sync --locked
 
+      - name: PySide6 Essentials import (Windows)
+        if: runner.os == 'Windows'
+        run: uv run python -c "from PySide6 import QtCore, QtWidgets; print(QtCore.qVersion())"
+
       - name: Ruff lint
         run: uv run ruff check .
 

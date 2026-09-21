@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ty_cache/
+.audit_cache/
 .coverage
 htmlcov/
 
@@ -13,12 +14,14 @@ htmlcov/
 build/
 dist/
 *.spec
+audit/
 
 # Runtime files
 config.toml
 logs/
 reports/
 *.log
+*.load-report.json
 
 # IDE / OS
 .idea/

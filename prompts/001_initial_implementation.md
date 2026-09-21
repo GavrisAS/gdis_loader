@@ -62,7 +62,7 @@
 
 ## 3. GUI
 
-Реализуй небольшой GUI на `tkinter`/`ttk`.
+Реализуй небольшой GUI на `PySide6-Essentials` (`QtCore`/`QtWidgets`).
 
 ### Поля
 
@@ -95,7 +95,7 @@
 
 Ошибки пользователю показывать человеческим текстом. Traceback писать в лог.
 
-Длительное чтение Excel выполнять не в UI thread. Используй worker thread + безопасную передачу результата обратно в event loop (`after`, queue или эквивалент). Не обновляй tkinter widgets напрямую из worker thread.
+Длительное чтение Excel выполнять не в UI thread. Используй `QThread` + worker `QObject` и signals/slots. Не обновляй Qt widgets напрямую из worker thread.
 
 ## 4. Config
 
@@ -472,7 +472,7 @@ JSON должен быть UTF-8, `ensure_ascii=False`, удобный для ч
 
 ### GUI
 
-Не надо тяжело тестировать пиксели. Вынеси логику модели/контроллера так, чтобы config и запуск service тестировались без реального mainloop. Один простой smoke test GUI допустим, если стабилен на CI; если headless Linux мешает — не заставляй CI поднимать X server ради tkinter.
+Не надо тяжело тестировать пиксели. Вынеси логику модели/контроллера так, чтобы config и запуск service тестировались без реального event loop. Один простой smoke test GUI допустим, если стабилен на CI; headless CI не должен открывать окно.
 
 ## 17. CLI
 
@@ -519,7 +519,7 @@ GUI и CLI должны вызывать один и тот же application ser
 - при запуске на Windows установленный Python не требуется;
 - config создается рядом с exe при первом сохранении настроек.
 
-Проверь корректность сбора tkinter в PyInstaller. Если нужны hidden imports/data для Tcl/Tk — добавь только необходимые настройки и документируй их.
+Проверь корректность сбора PySide6-Essentials в PyInstaller. Если нужны hidden imports/data для Qt — добавь только необходимые настройки и документируй их.
 
 ## 20. Обновление документации
 
@@ -565,7 +565,7 @@ GUI и CLI должны вызывать один и тот же application ser
 3. `uv run ruff format --check .` проходит.
 4. `uv run ty check` проходит.
 5. `uv run pytest` проходит.
-6. `uv run gdis-loader` запускает GUI на Linux (при наличии tkinter/display).
+6. `uv run gdis-loader` запускает GUI на Linux (при наличии Qt/display).
 7. GUI выбирает файлы и сохраняет/восстанавливает config.
 8. `validate` корректно проверяет реальный тестовый комплект.
 9. `update` создает новый `.xlsx`, не изменяя source calculator.

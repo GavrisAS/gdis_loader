@@ -14,7 +14,7 @@
 - Проверка типов: **ty**.
 - Тесты: **pytest**.
 - Excel: **openpyxl** для чтения/анализа. Для безопасной записи допускается минимальная работа с OOXML через стандартную библиотеку (`zipfile`, `xml.etree.ElementTree`/совместимый XML-парсер), если это требуется для сохранения нетаргетных частей книги без изменений.
-- GUI: стандартный **tkinter/ttk**. Не добавлять тяжелые GUI-фреймворки без необходимости.
+- GUI: **PySide6-Essentials** (`QtWidgets`/`QtCore`), без тяжёлых дополнительных GUI-модулей.
 - Сборка Windows: **PyInstaller**, режим **onedir / standalone folder**, не `onefile`.
 - Разработка: Linux. Целевая платформа: Windows 10/11 x64.
 - Excel COM automation, LibreOffice automation и VBA не использовать.
@@ -159,7 +159,7 @@ src/gdis_loader/
 - `excel` — безопасная запись листа `Данные`.
 - `gui` — только представление и координация, без бизнес-логики.
 
-Не создавать «god module» и не помещать бизнес-логику в callbacks tkinter.
+Не создавать «god module» и не помещать бизнес-логику в callbacks/slots Qt.
 
 ## Идентификация скважин
 

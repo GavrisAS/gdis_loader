@@ -13,24 +13,99 @@
 - Python: 3.14;
 - зависимости и окружение: uv;
 - Excel: openpyxl, без Excel COM;
-- GUI: tkinter/ttk;
+- GUI: PySide6-Essentials (`QtCore`/`QtWidgets`);
 - упаковка: PyInstaller `onedir`.
 
 ## Быстрый старт разработки
 
 ```bash
-uv sync
+uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest
 ```
 
-После реализации GUI:
+Для повседневной разработки те же команды доступны через `make`:
+
+```bash
+make sync
+make check
+make run
+```
+
+Запуск GUI:
 
 ```bash
 uv run gdis-loader
 ```
+
+CLI использует тот же application service, что и GUI:
+
+```bash
+uv run gdis-loader-cli validate \
+  --calculator data/GDIS_Rating_Calculator_FIXED.xlsx \
+  --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
+  --gdi "data/Сводная таблица ГДИ.xlsx" \
+  --lha "data/База ЛХА_Итог!.xlsm" \
+  --daily-report "data/07.2026 Cуточный рапорт БГП_полный.xlsm"
+
+uv run gdis-loader-cli update \
+  --calculator data/GDIS_Rating_Calculator_FIXED.xlsx \
+  --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
+  --gdi "data/Сводная таблица ГДИ.xlsx" \
+  --lha "data/База ЛХА_Итог!.xlsm" \
+  --daily-report "data/07.2026 Cуточный рапорт БГП_полный.xlsm" \
+  --output data/GDIS_Rating_Calculator_UPDATED.xlsx
+```
+
+`update` никогда не перезаписывает исходный калькулятор. Рядом с результатом
+создаются `*.load-report.json` и текстовый `gdis_loader.log`. Последние пути
+GUI сохраняет атомарно в `config.toml`; в PyInstaller-сборке этот файл лежит
+рядом с `.exe`, в режиме разработки — в корне репозитория.
+
+`validate` только читает и проверяет источники: `Записано строк` остаётся равным
+нулю, Excel-файл результата не создаётся, а при ERROR diagnostics CLI завершает
+работу с ненулевым кодом и GUI показывает ошибку. `update` записывает результат
+только после успешной валидации и проверки целевой книги.
+
+В v0.1 в лист `Данные` записываются только однозначно сопоставленные
+`Скважина`, `Пласт`, `Cl текущий`, `Cl предыдущий`, `ВГФ текущий` и
+`ВГФ предыдущий`. `Состояние`, `Дебит` и остальные неподтвержденные поля
+остаются пустыми. Суточный рапорт читается и валидируется, но не агрегируется.
+При фонде более 100 строк `Данные`/`tblData` расширяются с предупреждением о
+том, что расчетные листы калькулятора пока не расширяются.
+
+При фонде больше 100 строк summary содержит отдельное предупреждение, а после
+`update` GUI показывает его в заметном окне. Строки 101+ находятся в `Данные`, но
+формулы листов `Расчет` и `Рейтинг` для них пока не рассчитываются.
+
+## Получение Windows-сборки
+
+Локальный Windows-ПК для сборки не требуется. GitHub Actions использует
+`uv.lock`, Python 3.14 и PyInstaller `onedir`:
+
+1. Тестовая сборка: GitHub → **Actions** → **Build Windows** → **Run workflow**;
+   скачайте artifact `GDIS_DataLoader-windows-x64`.
+2. Релиз: создайте и отправьте тег `vX.Y.Z`. Workflow соберёт и проверит EXE,
+   а ZIP появится на странице GitHub Releases и среди artifacts.
+
+Перед архивированием workflow запускает `GDIS_DataLoader.exe --smoke-test`.
+Smoke-test импортирует PySide6-Essentials, openpyxl, service и writer без
+открытия окна.
+
+## Архив для внешнего аудита
+
+После проверок создайте переносимый архив текущего рабочего состояния:
+
+```bash
+make check
+make audit
+```
+
+`make audit` создаёт `audit/gdis_loader_audit_*.tar.xz`, включая незакоммиченные
+исходники и git metadata. Реальные файлы `data/`, локальный `config.toml`,
+генерированные книги, логи, caches, build и dist намеренно исключаются.
 
 ## Исходные данные
 
