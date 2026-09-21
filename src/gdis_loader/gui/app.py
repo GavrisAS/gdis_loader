@@ -81,6 +81,8 @@ class _ServiceWorker(QObject):
 class LoaderWindow(QMainWindow):
     """Thin view/controller for selecting paths and invoking the service."""
 
+    _thread_finished_signal = Signal(object)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("gdis_loader — загрузчик данных ГДИС")
@@ -92,6 +94,7 @@ class LoaderWindow(QMainWindow):
         self._worker: _ServiceWorker | None = None
         self._operation: str | None = None
         self._last_directory = ""
+        self._thread_finished_signal.connect(self._thread_finished)
         self._build_ui()
 
         loaded = load_config(config_path())
@@ -246,18 +249,19 @@ class LoaderWindow(QMainWindow):
         worker.failed.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(
+            lambda finished_thread=thread: self._thread_finished_signal.emit(finished_thread)
+        )
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_worker)
         self._thread = thread
         self._worker = worker
         thread.start()
 
     @Slot(object)
     def _finish_success(self, result: ServiceResult) -> None:
-        self._set_busy(False)
         self._set_status(result.summary())
         if result.has_errors:
-            QMessageBox.critical(self, "Проверка файлов", result.summary())
+            QMessageBox.critical(self, self._operation or "Ошибка", result.summary())
         elif self._operation == "Обновление данных" and result.has_capacity_warning:
             QMessageBox.warning(
                 self,
@@ -268,14 +272,19 @@ class LoaderWindow(QMainWindow):
 
     @Slot(str)
     def _finish_error(self, message: str) -> None:
-        self._set_busy(False)
         self._set_status(message)
         QMessageBox.critical(self, self._operation or "Ошибка", message)
 
-    @Slot()
-    def _clear_worker(self) -> None:
+    @Slot(object)
+    def _thread_finished(self, finished_thread: QThread) -> None:
+        """Release only the operation whose thread emitted ``finished``."""
+
+        if self._thread is not finished_thread:
+            return
         self._thread = None
         self._worker = None
+        self._operation = None
+        self._set_busy(False)
 
     def _validate(self) -> None:
         self._start(run_validate, "Проверка файлов")

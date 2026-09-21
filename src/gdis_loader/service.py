@@ -22,7 +22,6 @@ from gdis_loader.domain.models import (
 )
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
 from gdis_loader.matching.matcher import GdiIndex, match_all
-from gdis_loader.readers.daily import read_daily_report
 from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.lha import LhaIndex, read_lha
@@ -288,21 +287,27 @@ def _build_target_rows(
 def _prepare(
     paths: SourcePaths, report: LoadReport
 ) -> tuple[tuple[TargetRow, ...], FundParseResult]:
+    """Read the sources that currently contribute to the v0.1 target row.
+
+    The daily report is schema-validated before this function is called, but
+    its day values are intentionally not read here until the debit rule is
+    approved.  Keeping that reader independent makes the future change local
+    and avoids turning expected daily placeholders into runtime diagnostics.
+    """
+
     fund = read_fund(paths.fund)
     _append_issues(report, fund.issues)
     gdi_records, gdi_issues = read_gdi(paths.gdi)
     _append_issues(report, gdi_issues)
     lha_records, lha_issues = read_lha(paths.lha)
     _append_issues(report, lha_issues)
-    _, daily_issues = read_daily_report(paths.daily_report)
-    _append_issues(report, daily_issues)
     report.fund_date = fund.fund_date
     target_rows = _build_target_rows(fund, GdiIndex(gdi_records), LhaIndex(lha_records), report)
     return target_rows, fund
 
 
 def run_validate(paths: SourcePaths, log_path: Path | None = None) -> ServiceResult:
-    """Validate schemas and, when possible, read/index all sources without writing Excel."""
+    """Validate schemas and, when possible, prepare v0.1 sources without writing Excel."""
 
     actual_log_path = configure_logging(log_path or paths.output.parent / "gdis_loader.log")
     report = _new_report(paths)

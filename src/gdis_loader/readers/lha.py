@@ -24,6 +24,7 @@ from gdis_loader.readers.common import (
     coordinate,
     display_value,
     index_headers,
+    is_missing_measurement,
     openpyxl_read_warnings,
     parse_datetime,
     parse_number,
@@ -108,6 +109,7 @@ class LhaIndex:
             metric="cl_value",
             metric_label="Cl",
             base_well_id=base_well_id,
+            normalized_field=normalized_field,
             normalized_plast=normalized_plast,
         )
         vgf_current, vgf_previous, vgf_issues = _select_metric(
@@ -115,6 +117,7 @@ class LhaIndex:
             metric="vgf_value",
             metric_label="ВГФ",
             base_well_id=base_well_id,
+            normalized_field=normalized_field,
             normalized_plast=normalized_plast,
         )
         return LhaSelection(
@@ -127,6 +130,7 @@ class LhaIndex:
 class _MetricPoint:
     measured_at: datetime
     value: float | None
+    values: tuple[float, ...]
     distinct_values: int
 
 
@@ -136,6 +140,7 @@ def _select_metric(
     metric: str,
     metric_label: str,
     base_well_id: str,
+    normalized_field: str,
     normalized_plast: str,
 ) -> tuple[float | None, float | None, tuple[DiagnosticIssue, ...]]:
     values_by_timestamp: defaultdict[datetime, set[float]] = defaultdict(set)
@@ -149,36 +154,77 @@ def _select_metric(
         _MetricPoint(
             measured_at=measured_at,
             value=next(iter(values)) if len(values) == 1 else None,
+            values=tuple(sorted(values)),
             distinct_values=len(values),
         )
         for measured_at, values in sorted(
             values_by_timestamp.items(), key=lambda item: item[0], reverse=True
         )
     )
-    issues = [
-        DiagnosticIssue(
-            code="LHA_DUPLICATE_TIMESTAMP_CONFLICT",
-            severity=IssueSeverity.WARNING,
-            message=(
-                f"ЛХА: для скважины {base_well_id!r}, пласта {normalized_plast!r}, "
-                f"показателя {metric_label} найдено {point.distinct_values} различных "
-                f"значения в один момент {point.measured_at.isoformat(sep=' ')}; "
-                "значение не выбирается."
+    if not points:
+        return None, None, ()
+    if points[0].distinct_values > 1:
+        return (
+            None,
+            None,
+            (
+                _duplicate_timestamp_issue(
+                    points[0],
+                    metric_label=metric_label,
+                    role="current",
+                    base_well_id=base_well_id,
+                    normalized_field=normalized_field,
+                    normalized_plast=normalized_plast,
+                ),
             ),
-            source="lha",
-            well_id=base_well_id,
         )
-        for point in points
-        if point.distinct_values > 1
-    ]
-
-    if not points or points[0].distinct_values > 1:
-        return None, None, tuple(issues)
     current = points[0].value
     previous = None
-    if len(points) > 1 and points[1].distinct_values == 1:
-        previous = points[1].value
-    return current, previous, tuple(issues)
+    if len(points) <= 1:
+        return current, previous, ()
+    if points[1].distinct_values > 1:
+        return (
+            current,
+            None,
+            (
+                _duplicate_timestamp_issue(
+                    points[1],
+                    metric_label=metric_label,
+                    role="previous",
+                    base_well_id=base_well_id,
+                    normalized_field=normalized_field,
+                    normalized_plast=normalized_plast,
+                ),
+            ),
+        )
+    previous = points[1].value
+    return current, previous, ()
+
+
+def _duplicate_timestamp_issue(
+    point: _MetricPoint,
+    *,
+    metric_label: str,
+    role: str,
+    base_well_id: str,
+    normalized_field: str,
+    normalized_plast: str,
+) -> DiagnosticIssue:
+    values = ", ".join(f"{value:g}" for value in point.values[:5])
+    if len(point.values) > 5:
+        values += ", …"
+    return DiagnosticIssue(
+        code="LHA_DUPLICATE_TIMESTAMP_CONFLICT",
+        severity=IssueSeverity.WARNING,
+        message=(
+            f"ЛХА: скважина {base_well_id!r}, месторождение {normalized_field!r}, "
+            f"пласт {normalized_plast!r}, метрика {metric_label}, роль {role}: "
+            f"timestamp {point.measured_at.isoformat(sep=' ')} содержит "
+            f"{point.distinct_values} различных значения ({values}); значение не выбирается."
+        ),
+        source="lha",
+        well_id=base_well_id,
+    )
 
 
 def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, ...]]:
@@ -227,6 +273,8 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
         records: list[LhaRecord] = []
         blank_identity_streak = 0
         invalid_value_counts: defaultdict[str, int] = defaultdict(int)
+        invalid_value_samples: defaultdict[str, list[str]] = defaultdict(list)
+        missing_value_counts: defaultdict[str, int] = defaultdict(int)
         for row_number, row in enumerate(
             worksheet.iter_rows(
                 min_row=header_row + 1,
@@ -304,21 +352,12 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                 ("vgf", vgf_raw, vgf_value),
             ):
                 if raw_value is not None and parsed_value is None:
-                    invalid_value_counts[semantic_name] += 1
-                    if invalid_value_counts[semantic_name] <= 100:
-                        issues.append(
-                            DiagnosticIssue(
-                                code="LHA_INVALID_VALUE",
-                                severity=IssueSeverity.WARNING,
-                                message=(
-                                    f"Значение {semantic_name.upper()} {raw_value!r} "
-                                    "не является валидным числом."
-                                ),
-                                source="lha",
-                                coordinate=coordinate(row_number, columns[semantic_name]),
-                                well_id=normalized_well.base_well_id if normalized_well else None,
-                            )
-                        )
+                    if is_missing_measurement(raw_value):
+                        missing_value_counts[semantic_name] += 1
+                    else:
+                        invalid_value_counts[semantic_name] += 1
+                        if len(invalid_value_samples[semantic_name]) < 3:
+                            invalid_value_samples[semantic_name].append(repr(raw_value))
             records.append(
                 LhaRecord(
                     raw_field_name=raw_field,
@@ -335,19 +374,31 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                     source_row=row_number,
                 )
             )
-        for semantic_name, count in invalid_value_counts.items():
-            if count > 100:
-                issues.append(
-                    DiagnosticIssue(
-                        code="LHA_INVALID_VALUE_SUMMARY",
-                        severity=IssueSeverity.WARNING,
-                        message=(
-                            f"Для {semantic_name.upper()} пропущено {count} нечисловых "
-                            "значений; показаны первые 100."
-                        ),
-                        source="lha",
-                    )
+        for semantic_name, count in missing_value_counts.items():
+            issues.append(
+                DiagnosticIssue(
+                    code="LHA_MISSING_VALUE_SUMMARY",
+                    severity=IssueSeverity.INFO,
+                    message=(
+                        f"В ЛХА для {semantic_name.upper()} пропущено {count} пустых, "
+                        "placeholder- или Excel error-значений; они считаются отсутствующими."
+                    ),
+                    source="lha",
                 )
+            )
+        for semantic_name, count in invalid_value_counts.items():
+            samples = ", ".join(invalid_value_samples[semantic_name])
+            issues.append(
+                DiagnosticIssue(
+                    code="LHA_INVALID_VALUE",
+                    severity=IssueSeverity.INFO,
+                    message=(
+                        f"В ЛХА для {semantic_name.upper()} найдено {count} содержательных "
+                        f"нечисловых значений; они прочитаны как пропуски. Примеры: {samples}."
+                    ),
+                    source="lha",
+                )
+            )
         return tuple(records), tuple(issues)
     finally:
         workbook.close()

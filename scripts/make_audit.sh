@@ -50,8 +50,14 @@ head_sha=$(git rev-parse HEAD 2>/dev/null || printf '%s' 'unavailable')
     printf 'UTC timestamp: %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     printf 'Branch: %s\n' "$branch"
     printf 'HEAD: %s\n' "$head_sha"
-    printf 'Python: '
+    printf 'System Python: '
     python --version 2>&1 || true
+    printf 'Project Python (uv): '
+    if command -v uv >/dev/null 2>&1; then
+        uv run python --version 2>&1 || true
+    else
+        printf '%s\n' 'unavailable (uv is not installed)'
+    fi
     printf 'uv: '
     uv --version 2>&1 || true
     printf '%s\n' 'Production data policy: real files under data/ are intentionally excluded; only data/README.md is bundled.'

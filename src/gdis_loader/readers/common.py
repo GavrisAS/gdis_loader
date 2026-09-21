@@ -159,20 +159,34 @@ def parse_datetime(value: object) -> datetime | None:
 def parse_number(value: object) -> float | None:
     """Return a finite numeric value; zero is deliberately valid."""
 
-    if isinstance(value, bool) or value is None:
+    if isinstance(value, bool) or is_missing_measurement(value):
         return None
     if isinstance(value, (int, float)):
         result = float(value)
     else:
         text = clean_text(value)
-        if not text or text.startswith("#"):
-            return None
         text = text.replace(" ", "").replace(",", ".")
         try:
             result = float(text)
         except ValueError:
             return None
     return result if math.isfinite(result) else None
+
+
+def is_missing_measurement(value: object) -> bool:
+    """Return whether an Excel cell is an expected missing numeric value.
+
+    Excel error tokens and the placeholders used in the source workbooks are
+    not data-quality warnings by themselves.  A caller can still distinguish
+    them from arbitrary text and report the latter as a useful source note.
+    """
+
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    text = clean_text(value)
+    return not text or text in {"-", "—", "–"} or text.startswith("#")
 
 
 def display_value(value: object) -> str:

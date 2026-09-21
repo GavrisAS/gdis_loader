@@ -12,8 +12,8 @@ from gdis_loader.domain.models import DailyTelemetryRow, DiagnosticIssue, IssueS
 from gdis_loader.matching.normalize import normalize_well_id
 from gdis_loader.readers.common import (
     as_text,
-    coordinate,
     display_value,
+    is_missing_measurement,
     openpyxl_read_warnings,
     parse_number,
 )
@@ -91,7 +91,7 @@ def read_daily_report(
             issues.append(
                 DiagnosticIssue(
                     code="DAILY_DAY_HEADERS_INCOMPLETE",
-                    severity=IssueSeverity.WARNING,
+                    severity=IssueSeverity.INFO,
                     message=(
                         f"На листе суточного рапорта найдено только {len(day_columns)} "
                         "дневных колонок."
@@ -103,6 +103,8 @@ def read_daily_report(
         rows: list[DailyTelemetryRow] = []
         blank_streak = 0
         invalid_counts: Counter[str] = Counter()
+        invalid_samples: list[str] = []
+        missing_counts: Counter[str] = Counter()
         for row_number, row in enumerate(
             worksheet.iter_rows(
                 min_row=header_row + 1,
@@ -125,22 +127,16 @@ def read_daily_report(
             raw_well = display_value(well_value) if well_value is not None else None
             normalized = normalize_well_id(raw_well) if raw_well is not None else None
             daily_values: list[float | None] = []
-            for day, column_index in day_columns:
+            for _day, column_index in day_columns:
                 raw_value = values[column_index] if column_index < len(values) else None
                 parsed = parse_number(raw_value)
                 if raw_value is not None and parsed is None:
-                    invalid_counts["daily"] += 1
-                    if invalid_counts["daily"] <= 100:
-                        issues.append(
-                            DiagnosticIssue(
-                                code="DAILY_INVALID_VALUE",
-                                severity=IssueSeverity.WARNING,
-                                message=f"Значение дня {day} {raw_value!r} прочитано как пропуск.",
-                                source="daily_report",
-                                coordinate=coordinate(row_number, column_index),
-                                well_id=normalized.base_well_id if normalized else None,
-                            )
-                        )
+                    if is_missing_measurement(raw_value):
+                        missing_counts["daily"] += 1
+                    else:
+                        invalid_counts["daily"] += 1
+                        if len(invalid_samples) < 3:
+                            invalid_samples.append(repr(raw_value))
                 daily_values.append(parsed)
             rows.append(
                 DailyTelemetryRow(
@@ -151,14 +147,25 @@ def read_daily_report(
                     daily_values=tuple(daily_values),
                 )
             )
-        if invalid_counts["daily"] > 100:
+        if missing_counts["daily"] or invalid_counts["daily"]:
+            details: list[str] = []
+            if missing_counts["daily"]:
+                details.append(
+                    f"{missing_counts['daily']} пустых, placeholder- или Excel error-значений"
+                )
+            if invalid_counts["daily"]:
+                details.append(
+                    f"{invalid_counts['daily']} содержательных нечисловых значений "
+                    f"(примеры: {', '.join(invalid_samples)})"
+                )
             issues.append(
                 DiagnosticIssue(
-                    code="DAILY_INVALID_VALUE_SUMMARY",
-                    severity=IssueSeverity.WARNING,
+                    code="DAILY_INVALID_VALUE",
+                    severity=IssueSeverity.INFO,
                     message=(
-                        f"В суточном рапорте пропущено {invalid_counts['daily']} нечисловых "
-                        "значений; показаны первые 100."
+                        "В суточном рапорте прочитано как пропуск: "
+                        + "; ".join(details)
+                        + ". Суточные значения пока не участвуют в расчёте Дебита."
                     ),
                     source="daily_report",
                 )
