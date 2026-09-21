@@ -29,6 +29,10 @@ jobs:
       - name: Install Python 3.14
         run: uv python install 3.14
 
+      - name: Install Qt runtime dependency (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
+
       - name: Sync
         run: uv sync --locked
 
