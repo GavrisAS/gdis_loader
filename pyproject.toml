@@ -1,0 +1,75 @@
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "gdis-loader"
+version = "0.1.0"
+description = "Загрузчик исходных данных в лист 'Данные' калькулятора рейтингования скважин ГДИС"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "tomli-w>=1.2.0",
+]
+
+[project.gui-scripts]
+gdis-loader = "gdis_loader.gui.app:main"
+
+[project.scripts]
+gdis-loader-cli = "gdis_loader.cli:main"
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.16",
+    "pytest>=8.4",
+    "pytest-cov>=6.2",
+    "ruff>=0.13",
+    "ty>=0.0.1a20",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "RUF",
+    "PERF",
+]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ty]
+
+[tool.ty.environment]
+python-version = "3.14"
+root = ["./src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-config --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["gdis_loader"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

@@ -1,0 +1,10 @@
+[files]
+calculator = ""
+fund = ""
+gdi = ""
+lha = ""
+daily_report = ""
+output = ""
+
+[ui]
+last_directory = ""

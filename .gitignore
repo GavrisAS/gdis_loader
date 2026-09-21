@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Runtime files
+config.toml
+logs/
+reports/
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Business/source data must never be committed
+data/*
+!data/README.md
+
+# Generated Excel outputs
+*_UPDATED.xlsx
+*_updated.xlsx
+*_result.xlsx
