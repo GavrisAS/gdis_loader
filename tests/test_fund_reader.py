@@ -6,7 +6,11 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from gdis_loader.domain.models import FundCategory, IssueSeverity, SourceLocation
-from gdis_loader.readers.fund import parse_well_list_cell, read_fund
+from gdis_loader.readers.fund import (
+    parse_well_list_cell,
+    parse_well_list_cell_with_expected_count,
+    read_fund,
+)
 
 
 def _make_fund(path: Path) -> None:
@@ -90,8 +94,17 @@ def test_fund_count_mismatch_is_diagnostic(tmp_path: Path) -> None:
 
 def test_fund_list_parser_handles_numeric_newlines_and_leading_zeroes() -> None:
     assert parse_well_list_cell("011, 012\n013") == ["011", "012", "013"]
-    assert parse_well_list_cell("153 162") == ["153", "162"]
+    assert parse_well_list_cell("153 162") == ["153 162"]
     assert parse_well_list_cell(11) == ["11"]
+
+
+def test_fund_numeric_whitespace_split_requires_expected_count() -> None:
+    assert parse_well_list_cell_with_expected_count("153 162", 2) == (["153", "162"], True)
+    assert parse_well_list_cell_with_expected_count("153 162", None) == (["153 162"], False)
+    assert parse_well_list_cell_with_expected_count("153 162", 1) == (["153 162"], False)
+    assert parse_well_list_cell_with_expected_count("153 162", 3) == (["153 162"], False)
+    assert parse_well_list_cell_with_expected_count("54 ГС", 2) == (["54 ГС"], False)
+    assert parse_well_list_cell_with_expected_count("001 002", 2) == (["001", "002"], True)
 
 
 def test_fund_missing_separator_is_info_with_source_cell(tmp_path: Path) -> None:
@@ -115,3 +128,24 @@ def test_fund_missing_separator_is_info_with_source_cell(tmp_path: Path) -> None
     assert "разделено на две скважины" in issues[0].message
     assert issues[0].locations == (SourceLocation(str(path.resolve()), "01.08.2026", "C12"),)
     assert [well.raw_display for well in result.wells] == ["153", "162"]
+
+
+def test_fund_missing_separator_that_does_not_resolve_count_stays_unsplit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "fund.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "01.08.2026"
+    worksheet["C1"] = datetime(2026, 8, 1)
+    worksheet["A11"] = "Береговое"
+    worksheet["B11"] = "Береговое (ПК-1)"
+    worksheet["C11"] = 3
+    worksheet["C12"] = "153 162"
+    workbook.save(path)
+
+    result = read_fund(path)
+
+    assert [well.raw_display for well in result.wells] == ["153 162"]
+    assert any(issue.code == "FUND_COUNT_MISMATCH" for issue in result.issues)
+    assert not any(issue.code == "FUND_MISSING_SEPARATOR_NORMALIZED" for issue in result.issues)

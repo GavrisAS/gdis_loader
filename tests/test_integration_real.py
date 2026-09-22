@@ -7,7 +7,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from gdis_loader.domain.models import IssueSeverity, SourcePaths
+from gdis_loader.domain.models import IssueSeverity, SourceLocation, SourcePaths
 from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
 from gdis_loader.readers.lha import LhaIndex, read_lha
 from gdis_loader.service import run_update
@@ -89,7 +89,9 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     separator_issue = next(
         issue for issue in result.report.issues if issue.code == "FUND_MISSING_SEPARATOR_NORMALIZED"
     )
-    assert separator_issue.locations[0].file == str(REAL_FILES[1].resolve())
+    assert separator_issue.locations == (
+        SourceLocation(str(REAL_FILES[1].resolve()), "01.08.2026", "C12"),
+    )
     assert not any(issue.code.startswith("DAILY_") for issue in result.report.issues)
     assert not any(
         issue.code == "LHA_INVALID_VALUE" and issue.severity.value == "warning"

@@ -64,31 +64,29 @@ def _expected_count(value: object) -> int | None:
     return int(float(text))
 
 
-def _split_well_text(text: str) -> list[str]:
-    parts = [part.strip() for part in re.split(r"[,;\n\r]+", text) if part.strip()]
-    result: list[str] = []
+def _split_confirmed_list_delimiters(text: str) -> list[str]:
+    """Split only delimiters confirmed by the fund source format."""
+
+    return [part.strip() for part in re.split(r"[,;\n\r]+", text) if part.strip()]
+
+
+def _split_numeric_whitespace(parts: list[str]) -> tuple[list[str], bool]:
+    """Build the conservative numeric-whitespace candidate for parsed parts."""
+
+    candidate: list[str] = []
+    changed = False
     for part in parts:
         whitespace_parts = [piece for piece in re.split(r"\s+", part) if piece]
-        # The current fund contains one missing comma: ``153 162``.  Split
-        # only all-numeric groups; keep forms such as ``54 ГС`` intact.
+        # Keep forms such as ``54 ГС`` intact.  Numeric whitespace is only a
+        # candidate here; the caller must confirm it with an expected count.
         if len(whitespace_parts) > 1 and all(
             _NUMERIC_TOKEN_RE.fullmatch(piece) for piece in whitespace_parts
         ):
-            result.extend(whitespace_parts)
+            candidate.extend(whitespace_parts)
+            changed = True
         else:
-            result.append(part)
-    return result
-
-
-def _contains_missing_numeric_separator(text: str) -> bool:
-    """Return whether a list cell contains adjacent numeric tokens split by spaces."""
-
-    parts = [part.strip() for part in re.split(r"[,;\n\r]+", text) if part.strip()]
-    return any(
-        len(whitespace_parts := [piece for piece in re.split(r"\s+", part) if piece]) > 1
-        and all(_NUMERIC_TOKEN_RE.fullmatch(piece) for piece in whitespace_parts)
-        for part in parts
-    )
+            candidate.append(part)
+    return candidate, changed
 
 
 def parse_well_list_cell(value: object) -> list[str]:
@@ -101,7 +99,25 @@ def parse_well_list_cell(value: object) -> list[str]:
     if isinstance(value, (int, float)):
         return [display_value(value)]
     text = str(value).replace("\u00a0", " ").strip()
-    return _split_well_text(text) if text else []
+    return _split_confirmed_list_delimiters(text) if text else []
+
+
+def parse_well_list_cell_with_expected_count(
+    value: object, expected_count: int | None
+) -> tuple[list[str], bool]:
+    """Parse a fund list and apply numeric-whitespace split only when confirmed.
+
+    The boolean result reports whether the conservative whitespace correction was
+    applied and is used to emit the corresponding reader diagnostic.
+    """
+
+    parsed = parse_well_list_cell(value)
+    if expected_count is None or len(parsed) == expected_count:
+        return parsed, False
+    candidate, changed = _split_numeric_whitespace(parsed)
+    if changed and len(candidate) == expected_count:
+        return candidate, True
+    return parsed, False
 
 
 def _is_total_label(value: object) -> bool:
@@ -248,12 +264,12 @@ def read_fund(path: Path) -> FundParseResult:
             object_hint = extract_exact_plast_hint(object_name)
             for column, category in _CATEGORIES:
                 list_value = list_values[column]
+                expected = counts[column]
                 list_cell = coordinate(row_number + 1, column - 1)
-                if (
-                    isinstance(list_value, str)
-                    and _contains_missing_numeric_separator(list_value)
-                    and list_cell not in separator_locations
-                ):
+                parsed, separator_normalized = parse_well_list_cell_with_expected_count(
+                    list_value, expected
+                )
+                if separator_normalized and list_cell not in separator_locations:
                     issues.append(
                         DiagnosticIssue(
                             code="FUND_MISSING_SEPARATOR_NORMALIZED",
@@ -276,8 +292,6 @@ def read_fund(path: Path) -> FundParseResult:
                         )
                     )
                     separator_locations.add(list_cell)
-                parsed = parse_well_list_cell(list_values[column])
-                expected = counts[column]
                 if expected is not None and expected != len(parsed):
                     issues.append(
                         DiagnosticIssue(
