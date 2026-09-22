@@ -6,6 +6,7 @@ import json
 import logging
 import platform
 import tempfile
+from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,8 @@ from gdis_loader import __version__
 from gdis_loader.domain.models import (
     DiagnosticIssue,
     FundParseResult,
+    FundWell,
+    GdiRecord,
     IssueSeverity,
     LoadReport,
     MatchStatus,
@@ -23,6 +26,7 @@ from gdis_loader.domain.models import (
 )
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
 from gdis_loader.matching.matcher import GdiIndex, match_all
+from gdis_loader.matching.normalize import normalize_well_id
 from gdis_loader.progress import ProgressCallback, ProgressUpdate
 from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
@@ -62,6 +66,11 @@ class ServiceResult:
             for issue in self.report.issues
         )
 
+    def issue_count(self, code: str) -> int:
+        """Return the number of diagnostics with the supplied code."""
+
+        return sum(issue.code == code for issue in self.report.issues)
+
     def summary(self) -> str:
         report = self.report
         lines = [
@@ -75,6 +84,15 @@ class ServiceResult:
             f"Ошибок: {self.error_count}",
             f"Предупреждений: {self.warning_count}",
         ]
+        collision_count = self.issue_count("TARGET_IDENTITY_COLLISION")
+        if collision_count:
+            lines.append(f"Коллизий целевой идентичности: {collision_count}")
+        mzs_count = self.issue_count("UNCONFIRMED_WELL_VARIANT_MZS")
+        if mzs_count:
+            lines.append(f"Неподтвержденных вариантов МЗС: {mzs_count}")
+        separator_count = self.issue_count("FUND_MISSING_SEPARATOR_NORMALIZED")
+        if separator_count:
+            lines.append(f"Нормализаций пропущенного разделителя фонда: {separator_count}")
         if self.has_capacity_warning:
             lines.append(
                 "ВНИМАНИЕ: строки после 100 пока не рассчитываются на листах «Расчет» и «Рейтинг»."
@@ -201,6 +219,106 @@ def _report_error_text(report: LoadReport) -> str:
     )
 
 
+def _unique_locations(locations: Iterable[SourceLocation]) -> tuple[SourceLocation, ...]:
+    """Keep provenance complete while avoiding repeated source addresses."""
+
+    result: list[SourceLocation] = []
+    seen: set[SourceLocation] = set()
+    for location in locations:
+        if location not in seen:
+            result.append(location)
+            seen.add(location)
+    return tuple(result)
+
+
+def _append_target_identity_collisions(
+    evidence: Iterable[tuple[TargetRow, FundWell, GdiRecord]],
+    report: LoadReport,
+) -> None:
+    """Report target-key collisions without changing either target value."""
+
+    groups: defaultdict[tuple[str, str], list[tuple[TargetRow, FundWell, GdiRecord]]] = defaultdict(
+        list
+    )
+    for target_row, fund_well, gdi_record in evidence:
+        if target_row.well is None or target_row.plast is None:
+            continue
+        groups[(str(target_row.well), str(target_row.plast))].append(
+            (target_row, fund_well, gdi_record)
+        )
+
+    for (target_well, target_plast), rows in groups.items():
+        normalized_fields = {fund_well.normalized_field for _, fund_well, _ in rows}
+        if len(normalized_fields) < 2:
+            continue
+        field_names = list(dict.fromkeys(fund_well.field_name for _, fund_well, _ in rows))
+        fields_text = ", ".join(field_names)
+        locations = _unique_locations(
+            location
+            for _, fund_well, gdi_record in rows
+            for location in (*fund_well.locations, *gdi_record.locations)
+        )
+        _append_issues(
+            report,
+            (
+                DiagnosticIssue(
+                    code="TARGET_IDENTITY_COLLISION",
+                    severity=IssueSeverity.WARNING,
+                    message=(
+                        f"Одинаковый целевой идентификатор «{target_well} + {target_plast}» "
+                        f"относится к разным месторождениям ({fields_text}); калькулятор "
+                        "не хранит месторождение отдельным полем."
+                    ),
+                    source="target_identity",
+                    well_id=target_well,
+                    locations=locations,
+                ),
+            ),
+        )
+
+
+def _append_unconfirmed_mzs_issue(
+    fund_well: FundWell,
+    gdi_record: GdiRecord,
+    report: LoadReport,
+    reported: set[tuple[str, str | None, str | None, str | None]],
+) -> None:
+    """Warn once when the selected current match relies on the unconfirmed МЗС marker."""
+
+    fund_variant = normalize_well_id(fund_well.raw_display).recognized_variant
+    gdi_variant = normalize_well_id(gdi_record.raw_well_name).recognized_variant
+    if fund_variant != "МЗС" and gdi_variant != "МЗС":
+        return
+    key = (
+        fund_well.normalized_field,
+        fund_well.base_well_id,
+        gdi_record.raw_well_name,
+        gdi_record.normalized_plast,
+    )
+    if key in reported:
+        return
+    reported.add(key)
+    _append_issues(
+        report,
+        (
+            DiagnosticIssue(
+                code="UNCONFIRMED_WELL_VARIANT_MZS",
+                severity=IssueSeverity.WARNING,
+                message=(
+                    f"В актуальном сопоставлении {fund_well.raw_display!r} / "
+                    f"{gdi_record.raw_plast!r} используется маркер МЗС в обозначении "
+                    f"ГДИ {gdi_record.raw_well_name!r}; МЗС временно поддерживается "
+                    "для matching, но его эквивалентность той же физической скважине "
+                    "пока не подтверждена заказчиком."
+                ),
+                source="matching",
+                well_id=fund_well.base_well_id,
+                locations=_unique_locations((*fund_well.locations, *gdi_record.locations)),
+            ),
+        ),
+    )
+
+
 def _build_target_rows(
     fund: FundParseResult,
     gdi_index: GdiIndex,
@@ -211,10 +329,13 @@ def _build_target_rows(
     _append_issues(report, match_issues)
     report.fund_total = len(fund.wells)
     target_rows: list[TargetRow] = []
+    target_identity_evidence: list[tuple[TargetRow, FundWell, GdiRecord]] = []
+    reported_mzs: set[tuple[str, str | None, str | None, str | None]] = set()
     for match in matches:
         fund_well = match.fund_well
         if match.status is MatchStatus.MATCHED and match.record is not None:
             record = match.record
+            _append_unconfirmed_mzs_issue(fund_well, record, report, reported_mzs)
             lha_values = (
                 lha_index.select(
                     base_well_id=fund_well.base_well_id or "",
@@ -254,16 +375,16 @@ def _build_target_rows(
                             ),
                         ),
                     )
-            target_rows.append(
-                TargetRow(
-                    well=record.raw_well_name,
-                    plast=record.raw_plast,
-                    cl_current=cl_current,
-                    cl_previous=cl_previous,
-                    vgf_current=vgf_current,
-                    vgf_previous=vgf_previous,
-                )
+            target_row = TargetRow(
+                well=record.raw_well_name,
+                plast=record.raw_plast,
+                cl_current=cl_current,
+                cl_previous=cl_previous,
+                vgf_current=vgf_current,
+                vgf_previous=vgf_previous,
             )
+            target_rows.append(target_row)
+            target_identity_evidence.append((target_row, fund_well, record))
             report.matched += 1
             continue
 
@@ -292,6 +413,7 @@ def _build_target_rows(
             ),
         )
         report.without_lha += 1
+    _append_target_identity_collisions(target_identity_evidence, report)
     report.rows_prepared = len(target_rows)
     if len(target_rows) > 100:
         _append_issues(

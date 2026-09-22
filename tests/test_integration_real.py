@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
-from gdis_loader.domain.models import SourcePaths
+from gdis_loader.domain.models import IssueSeverity, SourcePaths
 from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
 from gdis_loader.readers.lha import LhaIndex, read_lha
 from gdis_loader.service import run_update
@@ -42,6 +43,50 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.no_gdi == 1
     assert result.report.ambiguous == 0
     assert result.report.rows_written == 129
+    warning_distribution = Counter(
+        issue.code for issue in result.report.issues if issue.severity is IssueSeverity.WARNING
+    )
+    assert warning_distribution == Counter(
+        {
+            "DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY": 1,
+            "GDI_INVALID_PLAST": 2,
+            "GDI_INVALID_WELL": 4,
+            "GDI_MISSING_DATE": 5,
+            "LHA_DUPLICATE_TIMESTAMP_CONFLICT": 11,
+            "LHA_INVALID_DATE": 13,
+            "LHA_INVALID_PLAST": 1,
+            "LHA_INVALID_WELL": 3,
+            "TARGET_IDENTITY_COLLISION": 5,
+            "UNCONFIRMED_WELL_VARIANT_MZS": 1,
+        }
+    )
+    info_distribution = Counter(
+        issue.code for issue in result.report.issues if issue.severity is IssueSeverity.INFO
+    )
+    assert info_distribution["FUND_MISSING_SEPARATOR_NORMALIZED"] == 1
+    collision_messages = {
+        issue.message for issue in result.report.issues if issue.code == "TARGET_IDENTITY_COLLISION"
+    }
+    assert len(collision_messages) == 5
+    for target in ("22 + ПК-1", "62 + ПК-1", "101 + ПК-1", "321 + ПК-1", "322 + ПК-1"):
+        assert any(target in message for message in collision_messages)
+    collision_issues = [
+        issue for issue in result.report.issues if issue.code == "TARGET_IDENTITY_COLLISION"
+    ]
+    assert all(
+        any(location.file == str(REAL_FILES[1].resolve()) for location in issue.locations)
+        and any(location.file == str(REAL_FILES[2].resolve()) for location in issue.locations)
+        for issue in collision_issues
+    )
+    mzs_issue = next(
+        issue for issue in result.report.issues if issue.code == "UNCONFIRMED_WELL_VARIANT_MZS"
+    )
+    assert any(location.file == str(REAL_FILES[1].resolve()) for location in mzs_issue.locations)
+    assert any(location.file == str(REAL_FILES[2].resolve()) for location in mzs_issue.locations)
+    separator_issue = next(
+        issue for issue in result.report.issues if issue.code == "FUND_MISSING_SEPARATOR_NORMALIZED"
+    )
+    assert separator_issue.locations[0].file == str(REAL_FILES[1].resolve())
     assert not any(issue.code.startswith("DAILY_") for issue in result.report.issues)
     assert not any(
         issue.code == "LHA_INVALID_VALUE" and issue.severity.value == "warning"

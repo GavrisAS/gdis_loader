@@ -80,6 +80,17 @@ def _split_well_text(text: str) -> list[str]:
     return result
 
 
+def _contains_missing_numeric_separator(text: str) -> bool:
+    """Return whether a list cell contains adjacent numeric tokens split by spaces."""
+
+    parts = [part.strip() for part in re.split(r"[,;\n\r]+", text) if part.strip()]
+    return any(
+        len(whitespace_parts := [piece for piece in re.split(r"\s+", part) if piece]) > 1
+        and all(_NUMERIC_TOKEN_RE.fullmatch(piece) for piece in whitespace_parts)
+        for part in parts
+    )
+
+
 def parse_well_list_cell(value: object) -> list[str]:
     """Parse mixed Excel list cells while preserving string leading zeroes."""
 
@@ -185,6 +196,7 @@ def read_fund(path: Path) -> FundParseResult:
         wells: list[FundWell] = []
         current_field = ""
         ignored_j_reported = False
+        separator_locations: set[str] = set()
         for row_number in range(1, worksheet.max_row + 1):
             object_value = worksheet.cell(row_number, 2).value
             object_name = as_text(object_value)
@@ -235,6 +247,35 @@ def read_fund(path: Path) -> FundParseResult:
                 )
             object_hint = extract_exact_plast_hint(object_name)
             for column, category in _CATEGORIES:
+                list_value = list_values[column]
+                list_cell = coordinate(row_number + 1, column - 1)
+                if (
+                    isinstance(list_value, str)
+                    and _contains_missing_numeric_separator(list_value)
+                    and list_cell not in separator_locations
+                ):
+                    issues.append(
+                        DiagnosticIssue(
+                            code="FUND_MISSING_SEPARATOR_NORMALIZED",
+                            severity=IssueSeverity.INFO,
+                            message=(
+                                "Обнаружены два числовых идентификатора, разделенные "
+                                "пробелом; значение разделено на две скважины на основании "
+                                "структуры текущего фонда."
+                            ),
+                            source="fund",
+                            coordinate=list_cell,
+                            locations=(
+                                cell_location(
+                                    source_file,
+                                    worksheet.title,
+                                    row_number + 1,
+                                    column - 1,
+                                ),
+                            ),
+                        )
+                    )
+                    separator_locations.add(list_cell)
                 parsed = parse_well_list_cell(list_values[column])
                 expected = counts[column]
                 if expected is not None and expected != len(parsed):

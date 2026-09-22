@@ -135,6 +135,33 @@ def test_worker_progress_signal_updates_bar_and_reset_starts_at_zero(
     window.close()
 
 
+def test_progress_bar_starts_after_update_button_and_reaches_right_edge(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    window = _window(monkeypatch)
+    app = QApplication.instance()
+    assert app is not None
+    window.resize(820, 520)
+    window.show()
+    app.processEvents()
+
+    validate_button = window._validate_button.geometry()
+    update_button = window._update_button.geometry()
+    progress_bar = window._progress_bar.geometry()
+    button_gap = update_button.left() - validate_button.right() - 1
+    progress_gap = progress_bar.left() - update_button.right() - 1
+    central_widget = window.centralWidget()
+    assert central_widget is not None
+    outer_layout = central_widget.layout()
+    assert outer_layout is not None
+    actions_item = outer_layout.itemAt(1)
+    assert actions_item is not None
+
+    assert progress_gap == button_gap
+    assert progress_bar.right() == actions_item.geometry().right()
+    window.close()
+
+
 @pytest.mark.parametrize(
     ("method_name", "operation"),
     (("_validate", "Проверка файлов"), ("_update", "Обновление данных")),

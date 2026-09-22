@@ -46,9 +46,13 @@ def normalize_well_id(value: object) -> NormalizedWell:
     """Return a conservative physical-well id.
 
     Leading zeroes are removed only for purely numeric values.  Suffixes are
-    removed only for explicit, observed/declared markers (ЗБС, ПВЛГ, КЛК,
-    МЗС, and ГС).  An arbitrary suffix after an underscore is deliberately
-    retained, so a new format cannot silently collide with another well.
+    removed only for explicit markers confirmed by the current sources
+    (ЗБС, ПВЛГ, КЛК, and ГС).  ``МЗС`` is retained as a temporarily supported
+    compatibility variant because it occurs in the current history, but its
+    equivalence to the same physical well is not confirmed; the service emits
+    a diagnostic when it is used by the active match.  An arbitrary suffix
+    after an underscore is deliberately retained, so a new format cannot
+    silently collide with another well.
     """
 
     raw = _clean_text(value)

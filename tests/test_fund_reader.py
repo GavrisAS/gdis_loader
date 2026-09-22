@@ -92,3 +92,26 @@ def test_fund_list_parser_handles_numeric_newlines_and_leading_zeroes() -> None:
     assert parse_well_list_cell("011, 012\n013") == ["011", "012", "013"]
     assert parse_well_list_cell("153 162") == ["153", "162"]
     assert parse_well_list_cell(11) == ["11"]
+
+
+def test_fund_missing_separator_is_info_with_source_cell(tmp_path: Path) -> None:
+    path = tmp_path / "fund.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "01.08.2026"
+    worksheet["C1"] = datetime(2026, 8, 1)
+    worksheet["A11"] = "Береговое"
+    worksheet["B11"] = "Береговое (ПК-1)"
+    worksheet["C11"] = 2
+    worksheet["C12"] = "153 162"
+    workbook.save(path)
+
+    result = read_fund(path)
+
+    issues = [issue for issue in result.issues if issue.code == "FUND_MISSING_SEPARATOR_NORMALIZED"]
+    assert len(issues) == 1
+    assert issues[0].severity is IssueSeverity.INFO
+    assert "два числовых идентификатора" in issues[0].message
+    assert "разделено на две скважины" in issues[0].message
+    assert issues[0].locations == (SourceLocation(str(path.resolve()), "01.08.2026", "C12"),)
+    assert [well.raw_display for well in result.wells] == ["153", "162"]
