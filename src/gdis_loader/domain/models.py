@@ -91,6 +91,32 @@ INTENTIONALLY_BLANK_FIELDS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True, slots=True)
+class SourceLocation:
+    """Structured origin of a value involved in a diagnostic."""
+
+    file: str
+    sheet: str | None = None
+    cell: str | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {"file": self.file, "sheet": self.sheet, "cell": self.cell}
+
+
+def source_locations(
+    source_file: str, source_sheet: str | None, *cells: str | None
+) -> tuple[SourceLocation, ...]:
+    """Build immutable locations for the supplied source cells."""
+
+    if not source_file:
+        return ()
+    return tuple(
+        SourceLocation(file=source_file, sheet=source_sheet, cell=cell)
+        for cell in cells
+        if cell is not None
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticIssue:
     """One concise diagnostic item suitable for both logs and JSON."""
 
@@ -100,6 +126,7 @@ class DiagnosticIssue:
     source: str | None = None
     coordinate: str | None = None
     well_id: str | None = None
+    locations: tuple[SourceLocation, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +136,7 @@ class DiagnosticIssue:
             "source": self.source,
             "coordinate": self.coordinate,
             "well_id": self.well_id,
+            "locations": [location.to_dict() for location in self.locations],
         }
 
 
@@ -126,6 +154,24 @@ class FundWell:
     source_row: int
     source_column: str
     object_plast_hint: str | None = None
+    source_file: str = ""
+    source_sheet: str | None = None
+    field_cell: str | None = None
+    well_cell: str | None = None
+    plast_cell: str | None = None
+
+    @property
+    def locations(self) -> tuple[SourceLocation, ...]:
+        """Return the fund cells that identify this occurrence."""
+
+        cell = self.well_cell or f"{self.source_column}{self.source_row}"
+        return source_locations(
+            self.source_file,
+            self.source_sheet,
+            self.field_cell,
+            self.plast_cell,
+            cell,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +200,26 @@ class GdiRecord:
     lnd_reliability: str | None
     gtm_date: datetime | None
     source_row: int
+    source_file: str = ""
+    source_sheet: str | None = None
+    field_cell: str | None = None
+    well_cell: str | None = None
+    plast_cell: str | None = None
+    date_cell: str | None = None
+    gtm_date_cell: str | None = None
+
+    @property
+    def locations(self) -> tuple[SourceLocation, ...]:
+        """Return identity/date cells useful for matching diagnostics."""
+
+        return source_locations(
+            self.source_file,
+            self.source_sheet,
+            self.field_cell,
+            self.well_cell,
+            self.plast_cell,
+            self.date_cell,
+        )
 
     @property
     def completion_key(self) -> tuple[str | None, str | None, str | None]:
@@ -176,6 +242,20 @@ class LhaRecord:
     cl_value: float | None
     vgf_value: float | None
     source_row: int
+    source_file: str = ""
+    source_sheet: str | None = None
+    field_cell: str | None = None
+    well_cell: str | None = None
+    plast_cell: str | None = None
+    date_cell: str | None = None
+    cl_cell: str | None = None
+    vgf_cell: str | None = None
+
+    def metric_locations(self, metric: str) -> tuple[SourceLocation, ...]:
+        """Return the exact measurement cell for a metric."""
+
+        cell = self.cl_cell if metric == "cl_value" else self.vgf_cell
+        return source_locations(self.source_file, self.source_sheet, cell)
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +301,11 @@ class DailyTelemetryRow:
     base_well_id: str | None
     source_row: int
     daily_values: tuple[float | None, ...]
+    source_file: str = ""
+    source_sheet: str | None = None
+    field_cell: str | None = None
+    well_cell: str | None = None
+    daily_cells: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

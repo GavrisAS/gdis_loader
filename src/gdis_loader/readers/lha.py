@@ -17,10 +17,12 @@ from gdis_loader.domain.models import (
     LhaRecord,
     LhaSelection,
     LhaValues,
+    SourceLocation,
 )
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.common import (
     as_text,
+    cell_location,
     coordinate,
     display_value,
     index_headers,
@@ -30,6 +32,7 @@ from gdis_loader.readers.common import (
     parse_number,
     row_is_empty,
     row_value,
+    sheet_location,
 )
 
 LHA_SHEET = "БД Сибнефтегаз"
@@ -132,6 +135,7 @@ class _MetricPoint:
     value: float | None
     values: tuple[float, ...]
     distinct_values: int
+    records: tuple[LhaRecord, ...]
 
 
 def _select_metric(
@@ -144,11 +148,13 @@ def _select_metric(
     normalized_plast: str,
 ) -> tuple[float | None, float | None, tuple[DiagnosticIssue, ...]]:
     values_by_timestamp: defaultdict[datetime, set[float]] = defaultdict(set)
+    records_by_timestamp: defaultdict[datetime, list[LhaRecord]] = defaultdict(list)
     for record in records:
         measured_at = record.measured_at
         value = getattr(record, metric)
         if measured_at is not None and value is not None:
             values_by_timestamp[measured_at].add(value)
+            records_by_timestamp[measured_at].append(record)
 
     points = tuple(
         _MetricPoint(
@@ -156,6 +162,7 @@ def _select_metric(
             value=next(iter(values)) if len(values) == 1 else None,
             values=tuple(sorted(values)),
             distinct_values=len(values),
+            records=tuple(records_by_timestamp[measured_at]),
         )
         for measured_at, values in sorted(
             values_by_timestamp.items(), key=lambda item: item[0], reverse=True
@@ -170,6 +177,7 @@ def _select_metric(
             (
                 _duplicate_timestamp_issue(
                     points[0],
+                    metric=metric,
                     metric_label=metric_label,
                     role="current",
                     base_well_id=base_well_id,
@@ -189,6 +197,7 @@ def _select_metric(
             (
                 _duplicate_timestamp_issue(
                     points[1],
+                    metric=metric,
                     metric_label=metric_label,
                     role="previous",
                     base_well_id=base_well_id,
@@ -204,6 +213,7 @@ def _select_metric(
 def _duplicate_timestamp_issue(
     point: _MetricPoint,
     *,
+    metric: str,
     metric_label: str,
     role: str,
     base_well_id: str,
@@ -224,6 +234,9 @@ def _duplicate_timestamp_issue(
         ),
         source="lha",
         well_id=base_well_id,
+        locations=tuple(
+            location for record in point.records for location in record.metric_locations(metric)
+        ),
     )
 
 
@@ -231,6 +244,7 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
     """Read the relevant columns and stop after a long empty identity tail."""
 
     issues: list[DiagnosticIssue] = []
+    source_file = str(path.resolve())
     with openpyxl_read_warnings() as caught:
         workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
     issues.extend(
@@ -240,6 +254,7 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                 severity=IssueSeverity.WARNING,
                 message=str(warning.message),
                 source="lha",
+                locations=(sheet_location(source_file, LHA_SHEET),),
             )
             for warning in caught
         ]
@@ -252,6 +267,7 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                     severity=IssueSeverity.ERROR,
                     message=f"В книге ЛХА отсутствует лист {LHA_SHEET!r}.",
                     source="lha",
+                    locations=(sheet_location(source_file, LHA_SHEET),),
                 )
             )
             return (), tuple(issues)
@@ -264,6 +280,7 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                     severity=IssueSeverity.ERROR,
                     message="На листе ЛХА не найдены все обязательные заголовки.",
                     source="lha",
+                    locations=(sheet_location(source_file, LHA_SHEET),),
                 )
             )
             return (), tuple(issues)
@@ -274,6 +291,7 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
         blank_identity_streak = 0
         invalid_value_counts: defaultdict[str, int] = defaultdict(int)
         invalid_value_samples: defaultdict[str, list[str]] = defaultdict(list)
+        invalid_value_locations: defaultdict[str, list[SourceLocation]] = defaultdict(list)
         missing_value_counts: defaultdict[str, int] = defaultdict(int)
         for row_number, row in enumerate(
             worksheet.iter_rows(
@@ -317,6 +335,14 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                         source="lha",
                         coordinate=coordinate(row_number, columns["measured_at"]),
                         well_id=normalized_well.base_well_id if normalized_well else None,
+                        locations=(
+                            cell_location(
+                                source_file,
+                                LHA_SHEET,
+                                row_number,
+                                columns["measured_at"],
+                            ),
+                        ),
                     )
                 )
             if normalized_well is None or normalized_well.base_well_id is None:
@@ -327,6 +353,9 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                         message="В строке ЛХА отсутствует или не распознан номер скважины.",
                         source="lha",
                         coordinate=coordinate(row_number, columns["well"]),
+                        locations=(
+                            cell_location(source_file, LHA_SHEET, row_number, columns["well"]),
+                        ),
                     )
                 )
             normalized_plast = normalize_plast(raw_plast)
@@ -341,6 +370,9 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                         source="lha",
                         coordinate=coordinate(row_number, columns["plast"]),
                         well_id=normalized_well.base_well_id if normalized_well else None,
+                        locations=(
+                            cell_location(source_file, LHA_SHEET, row_number, columns["plast"]),
+                        ),
                     )
                 )
             cl_raw = row_value(values, columns, "cl")
@@ -356,6 +388,14 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                         missing_value_counts[semantic_name] += 1
                     else:
                         invalid_value_counts[semantic_name] += 1
+                        invalid_value_locations[semantic_name].append(
+                            cell_location(
+                                source_file,
+                                LHA_SHEET,
+                                row_number,
+                                columns[semantic_name],
+                            )
+                        )
                         if len(invalid_value_samples[semantic_name]) < 3:
                             invalid_value_samples[semantic_name].append(repr(raw_value))
             records.append(
@@ -372,6 +412,14 @@ def read_lha(path: Path) -> tuple[tuple[LhaRecord, ...], tuple[DiagnosticIssue, 
                     cl_value=cl_value,
                     vgf_value=vgf_value,
                     source_row=row_number,
+                    source_file=source_file,
+                    source_sheet=LHA_SHEET,
+                    field_cell=coordinate(row_number, columns["field"]),
+                    well_cell=coordinate(row_number, columns["well"]),
+                    plast_cell=coordinate(row_number, columns["plast"]),
+                    date_cell=coordinate(row_number, columns["measured_at"]),
+                    cl_cell=coordinate(row_number, columns["cl"]),
+                    vgf_cell=coordinate(row_number, columns["vgf"]),
                 )
             )
         for semantic_name, count in missing_value_counts.items():

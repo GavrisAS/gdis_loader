@@ -8,14 +8,22 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from gdis_loader.domain.models import DailyTelemetryRow, DiagnosticIssue, IssueSeverity
+from gdis_loader.domain.models import (
+    DailyTelemetryRow,
+    DiagnosticIssue,
+    IssueSeverity,
+    SourceLocation,
+)
 from gdis_loader.matching.normalize import normalize_well_id
 from gdis_loader.readers.common import (
     as_text,
+    cell_location,
+    coordinate,
     display_value,
     is_missing_measurement,
     openpyxl_read_warnings,
     parse_number,
+    sheet_location,
 )
 
 DAILY_SHEET = "Добыча телеметрия"
@@ -40,6 +48,7 @@ def read_daily_report(
     """Read daily values and retain errors as missing, never as debit."""
 
     issues: list[DiagnosticIssue] = []
+    source_file = str(path.resolve())
     with openpyxl_read_warnings() as caught:
         workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
     issues.extend(
@@ -49,6 +58,7 @@ def read_daily_report(
                 severity=IssueSeverity.WARNING,
                 message=str(warning.message),
                 source="daily_report",
+                locations=(sheet_location(source_file, DAILY_SHEET),),
             )
             for warning in caught
         ]
@@ -61,6 +71,7 @@ def read_daily_report(
                     severity=IssueSeverity.ERROR,
                     message=f"В суточном рапорте отсутствует лист {DAILY_SHEET!r}.",
                     source="daily_report",
+                    locations=(sheet_location(source_file, DAILY_SHEET),),
                 )
             )
             return (), tuple(issues)
@@ -73,6 +84,7 @@ def read_daily_report(
                     severity=IssueSeverity.ERROR,
                     message="На листе суточного рапорта не найдены заголовки ГСК и СКВ.",
                     source="daily_report",
+                    locations=(sheet_location(source_file, DAILY_SHEET),),
                 )
             )
             return (), tuple(issues)
@@ -97,6 +109,7 @@ def read_daily_report(
                         "дневных колонок."
                     ),
                     source="daily_report",
+                    locations=(sheet_location(source_file, DAILY_SHEET),),
                 )
             )
         last_column = max((column for _, column in day_columns), default=1) + 1
@@ -105,6 +118,7 @@ def read_daily_report(
         invalid_counts: Counter[str] = Counter()
         invalid_samples: list[str] = []
         missing_counts: Counter[str] = Counter()
+        invalid_locations: list[SourceLocation] = []
         for row_number, row in enumerate(
             worksheet.iter_rows(
                 min_row=header_row + 1,
@@ -135,6 +149,9 @@ def read_daily_report(
                         missing_counts["daily"] += 1
                     else:
                         invalid_counts["daily"] += 1
+                        invalid_locations.append(
+                            cell_location(source_file, DAILY_SHEET, row_number, column_index)
+                        )
                         if len(invalid_samples) < 3:
                             invalid_samples.append(repr(raw_value))
                 daily_values.append(parsed)
@@ -145,6 +162,13 @@ def read_daily_report(
                     base_well_id=normalized.base_well_id if normalized else None,
                     source_row=row_number,
                     daily_values=tuple(daily_values),
+                    source_file=source_file,
+                    source_sheet=DAILY_SHEET,
+                    field_cell=coordinate(row_number, 0),
+                    well_cell=coordinate(row_number, 1),
+                    daily_cells=tuple(
+                        coordinate(row_number, column_index) for _day, column_index in day_columns
+                    ),
                 )
             )
         if missing_counts["daily"] or invalid_counts["daily"]:
@@ -168,6 +192,7 @@ def read_daily_report(
                         + ". Суточные значения пока не участвуют в расчёте Дебита."
                     ),
                     source="daily_report",
+                    locations=tuple(invalid_locations),
                 )
             )
         return tuple(rows), tuple(issues)

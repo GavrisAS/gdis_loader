@@ -7,10 +7,51 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      build_version: ${{ steps.version.outputs.build_version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      should_release: ${{ steps.version.outputs.should_release }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Calculate release version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" && "$REF_NAME" == "refs/heads/main" ]] || \
+             [[ "$EVENT_NAME" == "workflow_dispatch" && "$REF_NAME" == "refs/heads/main" ]]; then
+            release_tag=$(python3 scripts/next_version.py)
+            build_version="${release_tag#v}"
+            should_release=true
+          else
+            release_tag=''
+            build_version='0.1'
+            should_release=false
+          fi
+          [[ "$build_version" =~ ^[0-9]+\.[0-9]+$ ]]
+          echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+          echo "Build version: $build_version"
+          if [[ "$should_release" == true ]]; then
+            echo "Candidate tag: $release_tag"
+          fi
+
   build:
+    needs: version
     runs-on: windows-latest
     permissions:
       contents: read
@@ -31,20 +72,18 @@ jobs:
 
       - name: Build, test, and frozen smoke-test
         shell: pwsh
-        run: ./scripts/build_windows.ps1
+        run: ./scripts/build_windows.ps1 -BuildVersion "${{ needs.version.outputs.build_version }}"
 
       - name: Upload standalone ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: GDIS_DataLoader-windows-x64
-          path: dist/GDIS_DataLoader-windows-x64.zip
+          name: GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64
+          path: dist/GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64.zip
           if-no-files-found: error
 
   release:
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
-    needs: build
+    if: needs.version.outputs.should_release == 'true'
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,85 +97,48 @@ jobs:
       - name: Download Windows ZIP
         uses: actions/download-artifact@v4
         with:
-          name: GDIS_DataLoader-windows-x64
+          name: GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64
           path: release-assets
 
-      - name: Create unique release tag
-        id: release_tag
+      - name: Verify candidate tag is free and create it
         shell: bash
         env:
           TARGET_SHA: ${{ github.sha }}
+          TAG: ${{ needs.version.outputs.release_tag }}
         run: |
           set -euo pipefail
-          max_attempts=5
-          selected_tag=''
-          source_zip=$(find release-assets -maxdepth 1 -type f -name '*.zip' -print -quit)
-          if [[ -z "$source_zip" ]]; then
-            echo "Windows ZIP was not found." >&2
+          git fetch --tags origin
+          if git ls-remote --exit-code --refs origin "refs/tags/$TAG" >/dev/null; then
+            echo "Candidate tag $TAG already exists; refusing to modify it." >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            echo "Candidate tag $TAG already exists locally; refusing to modify it." >&2
+            exit 1
+          fi
+          git tag "$TAG" "$TARGET_SHA"
+          git push origin "refs/tags/$TAG"
+          tagged_sha=$(git ls-remote --refs origin "refs/tags/$TAG" | awk '{print $1}')
+          if [[ "$tagged_sha" != "$TARGET_SHA" ]]; then
+            echo "Remote tag $TAG points to $tagged_sha, expected $TARGET_SHA." >&2
             exit 1
           fi
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            git fetch --tags --force origin
-            candidate=$(python3 scripts/next_version.py)
-
-            if git ls-remote --exit-code --refs origin "refs/tags/$candidate" >/dev/null; then
-              echo "Tag $candidate already exists; recomputing (attempt $attempt/$max_attempts)."
-              continue
-            fi
-
-            if git rev-parse --verify --quiet "refs/tags/$candidate" >/dev/null; then
-              git tag --delete "$candidate"
-            fi
-            git tag "$candidate" "$TARGET_SHA"
-
-            if git push origin "refs/tags/$candidate"; then
-              tagged_sha=$(git ls-remote --refs origin "refs/tags/$candidate" | awk '{print $1}')
-              if [[ "$tagged_sha" != "$TARGET_SHA" ]]; then
-                echo "Remote tag $candidate points to $tagged_sha, expected $TARGET_SHA." >&2
-                exit 1
-              fi
-              selected_tag="$candidate"
-              break
-            fi
-
-            git tag --delete "$candidate" >/dev/null || true
-            if git ls-remote --exit-code --refs origin "refs/tags/$candidate" >/dev/null; then
-              echo "Tag $candidate was created concurrently; retrying."
-              continue
-            fi
-            echo "Could not create release tag $candidate." >&2
-            exit 1
-          done
-
-          if [[ -z "$selected_tag" ]]; then
-            echo "Unable to obtain a unique release tag after $max_attempts attempts." >&2
-            exit 1
-          fi
-
-          versioned_zip="release-assets/GDIS_DataLoader-${selected_tag}-windows-x64.zip"
-          mv "$source_zip" "$versioned_zip"
-
-          echo "tag=$selected_tag" >> "$GITHUB_OUTPUT"
-          echo "zip_path=$versioned_zip" >> "$GITHUB_OUTPUT"
-
-      - name: Verify tag target and publish GitHub Release
+      - name: Publish GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.sha }}
-          TAG: ${{ steps.release_tag.outputs.tag }}
-          ZIP_PATH: ${{ steps.release_tag.outputs.zip_path }}
+          TAG: ${{ needs.version.outputs.release_tag }}
+          ZIP_PATH: release-assets/GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64.zip
         run: |
           set -euo pipefail
+          test -f "$ZIP_PATH"
           tagged_sha=$(git ls-remote --refs origin "refs/tags/$TAG" | awk '{print $1}')
           [[ "$tagged_sha" == "$TARGET_SHA" ]]
-
           gh release create "$TAG" "$ZIP_PATH" \
             --verify-tag \
             --target "$TARGET_SHA" \
             --title "GDIS Data Loader $TAG" \
             --generate-notes
-
-          release_url=$(gh release view "$TAG" --json url --jq .url)
-          echo "Published $release_url"
+          gh release view "$TAG" --json url --jq .url

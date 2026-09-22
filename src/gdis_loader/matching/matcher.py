@@ -119,6 +119,14 @@ def match_all(
                     message=result.explanation,
                     source="gdi",
                     well_id=fund_well.base_well_id,
+                    locations=(
+                        *fund_well.locations,
+                        *(
+                            location
+                            for record in result.candidates
+                            for location in record.locations
+                        ),
+                    ),
                 )
             )
         elif result.status is MatchStatus.NO_GDI:
@@ -129,6 +137,7 @@ def match_all(
                     message=result.explanation,
                     source="gdi",
                     well_id=fund_well.base_well_id,
+                    locations=fund_well.locations,
                 )
             )
         elif result.status is MatchStatus.INVALID_SOURCE:
@@ -139,6 +148,7 @@ def match_all(
                     message=result.explanation,
                     source="fund",
                     well_id=fund_well.base_well_id,
+                    locations=fund_well.locations,
                 )
             )
     return tuple(results), tuple(issues)

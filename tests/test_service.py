@@ -51,7 +51,7 @@ def test_service_result_exposes_errors_and_capacity_warning() -> None:
     )
     report = LoadReport(
         timestamp="2026-09-21T00:00:00+00:00",
-        app_version="0.1.0",
+        app_version="0.1",
         python_version="3.14.0",
         input_paths={},
         fund_total=129,
@@ -84,7 +84,7 @@ def test_warning_list_contains_only_warning_messages() -> None:
     )
     report = LoadReport(
         timestamp="now",
-        app_version="0.1.0",
+        app_version="0.1",
         python_version="3.14.0",
         input_paths={},
     )
@@ -157,7 +157,7 @@ def test_lha_not_found_is_not_added_for_selection_conflict() -> None:
     )
     report = LoadReport(
         timestamp="now",
-        app_version="0.1.0",
+        app_version="0.1",
         python_version="3.14.0",
         input_paths={},
     )
@@ -183,7 +183,7 @@ def test_info_issue_is_logged_at_info_level(caplog) -> None:  # type: ignore[no-
     )
     report = LoadReport(
         timestamp="now",
-        app_version="0.1.0",
+        app_version="0.1",
         python_version="3.14.0",
         input_paths={},
     )

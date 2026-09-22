@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 from collections.abc import Callable
@@ -26,7 +27,9 @@ from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-c
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
+    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -34,8 +37,10 @@ from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-c
 if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent  # ty: ignore[unresolved-import, unused-ignore-comment]
 
+from gdis_loader import __version__
 from gdis_loader.config import AppConfig, config_path, load_config, save_config
 from gdis_loader.domain.models import SourcePaths
+from gdis_loader.progress import ProgressCallback, ProgressUpdate
 from gdis_loader.service import (
     ServiceError,
     ServiceResult,
@@ -46,7 +51,7 @@ from gdis_loader.service import (
 )
 
 LOGGER = logging.getLogger(__name__)
-_ServiceAction = Callable[[SourcePaths], ServiceResult]
+_ServiceAction = Callable[..., ServiceResult]
 
 _FILE_FIELDS: tuple[tuple[str, str, str, bool], ...] = (
     ("calculator", "Калькулятор", "Excel workbook (*.xlsx);;All files (*)", False),
@@ -63,6 +68,7 @@ class _ServiceWorker(QObject):
 
     finished = Signal(object)
     failed = Signal(str)
+    progress_changed = Signal(int, str)
 
     def __init__(self, action: _ServiceAction, paths: SourcePaths) -> None:
         super().__init__()
@@ -72,7 +78,20 @@ class _ServiceWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            result = self._action(self._paths)
+            parameters = tuple(inspect.signature(self._action).parameters.values())
+            accepts_progress = (
+                any(
+                    parameter.kind
+                    in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                    for parameter in parameters
+                )
+                or len(tuple(parameters)) >= 2
+            )
+            result = (
+                self._action(self._paths, self._report_progress)
+                if accepts_progress
+                else self._action(self._paths)
+            )
         except ServiceError as error:
             self.failed.emit(str(error))
         except Exception:
@@ -80,6 +99,9 @@ class _ServiceWorker(QObject):
             self.failed.emit("Неожиданная ошибка. Подробности записаны в лог-файл.")
         else:
             self.finished.emit(result)
+
+    def _report_progress(self, update: ProgressUpdate) -> None:
+        self.progress_changed.emit(update.percent, update.stage)
 
 
 class LoaderWindow(QMainWindow):
@@ -98,6 +120,7 @@ class LoaderWindow(QMainWindow):
         self._worker: _ServiceWorker | None = None
         self._operation: str | None = None
         self._last_directory = ""
+        self._progress_bar: QProgressBar
         self._thread_finished_signal.connect(self._thread_finished)
         self._build_ui()
 
@@ -115,6 +138,8 @@ class LoaderWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget(self)
         self.setCentralWidget(central)
+        self.setStatusBar(QStatusBar(self))
+        self.statusBar().showMessage(f"Версия {__version__}")
         outer = QVBoxLayout(central)
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
@@ -142,6 +167,13 @@ class LoaderWindow(QMainWindow):
         actions.addWidget(self._validate_button)
         actions.addWidget(self._update_button)
         actions.addStretch(1)
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setMinimumWidth(180)
+        self._progress_bar.setMaximumWidth(240)
+        self._progress_bar.setTextVisible(True)
+        actions.addWidget(self._progress_bar)
         outer.addLayout(actions)
 
         outer.addWidget(QLabel("Статус"))
@@ -227,6 +259,14 @@ class LoaderWindow(QMainWindow):
     def _set_status(self, message: str) -> None:
         self._status_box.setPlainText(message)
 
+    def _reset_progress(self) -> None:
+        self._progress_bar.setValue(0)
+
+    @Slot(int, str)
+    def _progress_changed(self, percent: int, stage: str) -> None:
+        self._progress_bar.setValue(percent)
+        self._set_status(f"{self._operation or 'Операция'}: {stage}")
+
     def _start(self, action: _ServiceAction, operation: str) -> None:
         if self._busy:
             return
@@ -240,12 +280,20 @@ class LoaderWindow(QMainWindow):
             return
 
         self._operation = operation
+        self._reset_progress()
         self._set_busy(True)
         self._set_status(f"{operation}: чтение Excel выполняется в фоне…")
         thread = QThread(self)
-        worker = _ServiceWorker(action, paths)
+
+        def action_with_progress(
+            worker_paths: SourcePaths, progress: ProgressCallback
+        ) -> ServiceResult:
+            return action(worker_paths, progress=progress)
+
+        worker = _ServiceWorker(action_with_progress, paths)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.progress_changed.connect(self._progress_changed)
         worker.finished.connect(self._finish_success)
         worker.failed.connect(self._finish_error)
         worker.finished.connect(thread.quit)
@@ -262,6 +310,8 @@ class LoaderWindow(QMainWindow):
 
     @Slot(object)
     def _finish_success(self, result: ServiceResult) -> None:
+        if not result.has_errors:
+            self._progress_bar.setValue(100)
         self._set_status(result.summary())
         if result.has_errors:
             QMessageBox.critical(self, self._operation or "Ошибка", result.summary())
@@ -303,13 +353,19 @@ class LoaderWindow(QMainWindow):
         event.accept()
 
 
-def smoke_test() -> int:
+def smoke_test(expected_version: str | None = None) -> int:
     """Import the frozen runtime's critical modules without creating a window."""
 
     from openpyxl import load_workbook  # noqa: F401
 
+    from gdis_loader import __version__
     from gdis_loader.excel.writer import write_target_rows  # noqa: F401
     from gdis_loader.service import ServiceResult, run_update, run_validate  # noqa: F401
+
+    if expected_version is not None and __version__ != expected_version:
+        raise RuntimeError(
+            f"Встроенная версия {__version__!r} не совпадает с ожидаемой {expected_version!r}."
+        )
 
     location = config_path()
     if not isinstance(location, Path) or not location.parent.is_dir():
@@ -319,14 +375,20 @@ def smoke_test() -> int:
         if location.parent != executable_directory:
             raise RuntimeError("В frozen-режиме config.toml должен находиться рядом с EXE.")
     if sys.stdout is not None:
-        print(f"PySide6 Qt {QtCore.qVersion()} smoke-test passed")
+        print(f"GDIS Data Loader {__version__} — PySide6 Qt {QtCore.qVersion()} smoke-test passed")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if "--smoke-test" in arguments:
-        return smoke_test()
+        expected_version: str | None = None
+        if "--expected-version" in arguments:
+            index = arguments.index("--expected-version")
+            if index + 1 >= len(arguments):
+                raise SystemExit("--expected-version requires a value")
+            expected_version = arguments[index + 1]
+        return smoke_test(expected_version)
     app = QApplication([sys.argv[0], *arguments])
     window = LoaderWindow()
     window.show()

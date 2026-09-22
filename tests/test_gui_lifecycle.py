@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication  # ty: ignore[unresolved-import, unus
 
 import gdis_loader.gui.app as gui_app
 from gdis_loader.domain.models import LoadReport, SourcePaths
+from gdis_loader.progress import ProgressUpdate
 from gdis_loader.service import ServiceResult
 
 
@@ -17,7 +18,7 @@ def _result() -> ServiceResult:
     return ServiceResult(
         LoadReport(
             timestamp="now",
-            app_version="0.1.0",
+            app_version="0.1",
             python_version="3.14.0",
             input_paths={},
         )
@@ -113,4 +114,29 @@ def test_worker_error_stays_busy_until_thread_finished(monkeypatch, tmp_path: Pa
     assert window._thread is thread
     window._thread_finished(thread)
     assert not window._busy
+    window.close()
+
+
+def test_worker_progress_signal_updates_bar_and_reset_starts_at_zero(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    window = _window(monkeypatch)
+    worker = gui_app._ServiceWorker(lambda _paths: _result(), _paths(tmp_path))
+    worker.progress_changed.connect(window._progress_changed)
+    window._operation = "Проверка файлов"
+
+    worker._report_progress(ProgressUpdate(45, "Чтение ГДИ"))
+    assert window._progress_bar.value() == 45
+
+    window._progress_bar.setValue(83)
+    window._reset_progress()
+    assert window._progress_bar.value() == 0
+    window.close()
+
+
+def test_status_bar_contains_only_runtime_version(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    window = _window(monkeypatch)
+
+    assert window.statusBar().currentMessage() == "Версия 0.1"
+    assert "Александр Гаврись" not in window.statusBar().currentMessage()
     window.close()

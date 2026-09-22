@@ -73,7 +73,7 @@ GUI сохраняет атомарно в `config.toml`; в PyInstaller-сбо�
 работу с ненулевым кодом и GUI показывает ошибку. `update` записывает результат
 только после успешной валидации и проверки целевой книги.
 
-В v0.1 в лист `Данные` записываются только однозначно сопоставленные
+В текущем базовом scope в лист `Данные` записываются только однозначно сопоставленные
 `Скважина`, `Пласт`, `Cl текущий`, `Cl предыдущий`, `ВГФ текущий` и
 `ВГФ предыдущий`. `Состояние`, `Дебит` и остальные неподтвержденные поля
 остаются пустыми. Суточный рапорт проверяется на наличие файла, листа и базовых
@@ -87,6 +87,10 @@ GUI сохраняет атомарно в `config.toml`; в PyInstaller-сбо�
 запись, `WARNING` относится к проблеме, влияющей на текущий результат, а
 ожидаемые Excel placeholders (`#DIV/0!`, `#REF!`, пустое значение, `-`) и
 исторические проблемы источников попадают только в компактные `INFO`-сводки.
+Каждый warning/error, связанный с исходной ячейкой, хранит structured
+provenance (`file`, `sheet`, `cell`). В JSON это поле `locations`, а в обычном
+логе оно выводится как `file::sheet::cell`; для ошибок структуры книги sheet/cell
+могут быть `null`.
 
 В JSON-отчете `warnings` содержит только тексты диагностик уровня `WARNING`, по
 одному элементу на issue. Поле `without_lha` означает отсутствие выбранных
@@ -97,11 +101,18 @@ GUI сохраняет атомарно в `config.toml`; в PyInstaller-сбо�
 `update` GUI показывает его в заметном окне. Строки 101+ находятся в `Данные`, но
 формулы листов `Расчет` и `Рейтинг` для них пока не рассчитываются.
 
+Внизу GUI штатная status bar постоянно показывает только текущую версию
+(`Версия MAJOR.MINOR`). Справа от кнопок действий находится progress bar: каждое
+новое `validate`/`update` начинается с 0, проходит детерминированные этапы
+pipeline и достигает 100 только при успехе; при ошибке значение остаётся на
+последней завершённой контрольной точке.
+
 ## Получение Windows-сборки
 
 Локальный Windows-ПК для сборки EXE не требуется. Каждый обычный push в `main`
-запускает GitHub Actions на Windows и проходит `uv sync --locked`, проверки,
-PyInstaller `onedir`, frozen smoke-test и публикацию релиза:
+запускает GitHub Actions: сначала вычисляется candidate release, затем на Windows
+проходят `uv sync --locked`, проверки, PyInstaller `onedir`, frozen smoke-test и
+публикация релиза:
 
 ```text
 push в main -> Windows CI -> tests -> PyInstaller onedir -> smoke-test
@@ -114,9 +125,14 @@ Workflow использует только теги и релизы формат
 указывает на commit, запустивший workflow. `workflow_dispatch` на `main` повторяет
 публикацию; на другой ветке выполняется только тестовая сборка без tag/release.
 
+Source/dev fallback — `0.1`. Для release build workflow временно генерирует
+`_build_version.py`, передаёт в EXE version без `v` и проверяет её командой
+`GDIS_DataLoader.exe --smoke-test --expected-version MAJOR.MINOR`. Поэтому runtime,
+GUI и JSON report используют одну и ту же injected release version.
+
 Для ручной проверки сборки откройте GitHub → **Actions** → **Build Windows** →
 **Run workflow** и выберите не-main ветку; standalone ZIP будет доступен как
-artifact `GDIS_DataLoader-windows-x64`. Release asset получает имя
+artifact `GDIS_DataLoader-vMAJOR.MINOR-windows-x64`. Release asset получает имя
 `GDIS_DataLoader-vMAJOR.MINOR-windows-x64.zip`.
 
 Перед архивированием workflow запускает `GDIS_DataLoader.exe --smoke-test`.

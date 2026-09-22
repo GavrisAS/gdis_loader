@@ -54,6 +54,12 @@ PySide6-Essentials (`QtWidgets`/`QtCore`). Выбор файлов, сохран
 запуск фоновой задачи через `QThread`/worker `QObject` и отображение результата.
 Виджеты не вызываются из worker-потока; бизнес-логика отсутствует.
 
+Service публикует GUI-independent `ProgressUpdate(percent, stage)` через
+optional callback. Worker преобразует его в Qt signal, а GUI обновляет
+`QProgressBar` только в main thread. Штатная `QStatusBar` зарезервирована для
+единственного постоянного текста `Версия MAJOR.MINOR` и не используется для
+progress/status сообщений.
+
 Lifecycle worker привязан к конкретному экземпляру `QThread`: обработчики
 результата и ошибки обновляют статус, но оставляют окно занятым до `finished`
 этого thread. Устаревший thread не может очистить ссылки новой операции.
@@ -96,14 +102,26 @@ CLI нужен для CI и воспроизводимой диагностик�
 что исходные записи ЛХА отсутствуют, поскольку туда входят и неразрешимые
 конфликты выбора.
 
+`DiagnosticIssue.locations` содержит immutable `SourceLocation(file, sheet,
+cell)` для исходных workbook diagnostics. Readers сохраняют provenance на
+record вместе с field/well/plast/date/measurement cells; matching и LHA conflict
+diagnostics используют эти адреса напрямую. JSON сериализует structured
+`locations`, а text logger выводит их в виде `file::sheet::cell`.
+
+Runtime `gdis_loader.__version__` получает временный build-time module только в
+release build; без него используется source/dev fallback `0.1`. `pyproject.toml`
+остаётся двухкомпонентным и не переписывается workflow.
+
 ### Windows release workflow
 
-Каждый push в `main` запускает Windows-проверки, PyInstaller `onedir` и frozen
-smoke-test. После успешной сборки workflow вычисляет следующую версию по строгим
-тегам `vMAJOR.MINOR`, атомарно пытается создать тег на `github.sha` с ограниченным
-повтором при конфликте и публикует ZIP как GitHub Release. `PATCH` и commit с
-bump версии не используются. Ручной запуск на `main` публикует релиз тем же
-путём, а запуск на другой ветке ограничивается сборкой artifact.
+Каждый push в `main` сначала вычисляет candidate `vMAJOR.MINOR`, затем запускает
+Windows-проверки, PyInstaller `onedir` и frozen smoke-test. Только после успешной
+сборки workflow проверяет, что candidate tag свободен, создаёт его на exact
+`github.sha` и публикует ZIP как GitHub Release. Занятый tag приводит к failure
+без изменения существующего tag; queue/concurrency-синхронизация не
+используется. `PATCH` и commit с bump версии не используются. Ручной запуск на
+`main` публикует релиз тем же путём, а запуск на другой ветке ограничивается
+сборкой artifact.
 
 ## Конфигурация
 

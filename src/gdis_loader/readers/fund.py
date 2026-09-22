@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import get_column_letter
 
 from gdis_loader.domain.models import (
     DiagnosticIssue,
@@ -24,9 +24,12 @@ from gdis_loader.matching.normalize import (
 )
 from gdis_loader.readers.common import (
     as_text,
+    cell_location,
+    coordinate,
     display_value,
     openpyxl_read_warnings,
     parse_datetime,
+    sheet_location,
 )
 
 DATE_SHEET_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
@@ -95,7 +98,9 @@ def _is_total_label(value: object) -> bool:
     return text is not None and ("ВСЕГО" in text.upper() or "ИТОГО" in text.upper())
 
 
-def _select_sheet(workbook: Any) -> tuple[Any | None, date | None, list[DiagnosticIssue]]:
+def _select_sheet(
+    workbook: Any, source_file: str
+) -> tuple[Any | None, date | None, list[DiagnosticIssue]]:
     issues: list[DiagnosticIssue] = []
     candidates: list[tuple[date, str, object]] = []
     for worksheet in workbook.worksheets:  # type: ignore[attr-defined]
@@ -112,6 +117,7 @@ def _select_sheet(workbook: Any) -> tuple[Any | None, date | None, list[Diagnost
                 severity=IssueSeverity.ERROR,
                 message="В фонде не найден лист с именем строго в формате DD.MM.YYYY.",
                 source="fund",
+                locations=(sheet_location(source_file, None),),
             )
         )
         return None, None, issues
@@ -127,6 +133,7 @@ def _select_sheet(workbook: Any) -> tuple[Any | None, date | None, list[Diagnost
                     f"выбран {selected[0][1]!r}."
                 ),
                 source="fund",
+                locations=(sheet_location(source_file, selected[0][1]),),
             )
         )
     return selected[0][2], selected_date, issues
@@ -136,6 +143,7 @@ def read_fund(path: Path) -> FundParseResult:
     """Read the newest dated fund sheet and build one record per C/D/G/H item."""
 
     issues: list[DiagnosticIssue] = []
+    source_file = str(path.resolve())
     with openpyxl_read_warnings() as caught:
         workbook = load_workbook(path, read_only=False, data_only=True, keep_links=False)
     issues.extend(
@@ -145,13 +153,14 @@ def read_fund(path: Path) -> FundParseResult:
                 severity=IssueSeverity.WARNING,
                 message=str(warning.message),
                 source="fund",
+                locations=(sheet_location(source_file, None),),
             )
             for warning in caught
         ]
     )
 
     try:
-        worksheet, fund_date, selection_issues = _select_sheet(workbook)
+        worksheet, fund_date, selection_issues = _select_sheet(workbook, source_file)
         issues.extend(selection_issues)
         if worksheet is None or fund_date is None:
             return FundParseResult((), fund_date, None, tuple(issues))
@@ -169,6 +178,7 @@ def read_fund(path: Path) -> FundParseResult:
                     ),
                     source="fund",
                     coordinate="C1",
+                    locations=(cell_location(source_file, worksheet.title, 1, 2),),
                 )
             )
 
@@ -200,10 +210,11 @@ def read_fund(path: Path) -> FundParseResult:
                         severity=IssueSeverity.WARNING,
                         message=(
                             "Колонка J (освоение/ожидание освоения) обнаружена и намеренно "
-                            "не включена в v0.1."
+                            "не включена в текущий базовый scope."
                         ),
                         source="fund",
-                        coordinate=f"J{row_number + 1}",
+                        coordinate=coordinate(row_number + 1, 9),
+                        locations=(cell_location(source_file, worksheet.title, row_number + 1, 9),),
                     )
                 )
                 ignored_j_reported = True
@@ -217,7 +228,8 @@ def read_fund(path: Path) -> FundParseResult:
                         severity=IssueSeverity.ERROR,
                         message=f"Для объекта {object_name!r} не определено месторождение/ЛУ.",
                         source="fund",
-                        coordinate=f"B{row_number}",
+                        coordinate=coordinate(row_number, 1),
+                        locations=(cell_location(source_file, worksheet.title, row_number, 1),),
                     )
                 )
             object_hint = extract_exact_plast_hint(object_name)
@@ -234,7 +246,15 @@ def read_fund(path: Path) -> FundParseResult:
                                 f"указано {expected}, распознано {len(parsed)} элементов."
                             ),
                             source="fund",
-                            coordinate=f"{chr(64 + column)}{row_number}",
+                            coordinate=coordinate(row_number, column - 1),
+                            locations=(
+                                cell_location(
+                                    source_file,
+                                    worksheet.title,
+                                    row_number,
+                                    column - 1,
+                                ),
+                            ),
                         )
                     )
                 for raw_value in parsed:
@@ -249,8 +269,13 @@ def read_fund(path: Path) -> FundParseResult:
                             source_category=category,
                             fund_date=fund_date,
                             source_row=row_number + 1,
-                            source_column=chr(64 + column),
+                            source_column=get_column_letter(column),
                             object_plast_hint=object_hint,
+                            source_file=source_file,
+                            source_sheet=worksheet.title,
+                            field_cell=coordinate(row_number, 0),
+                            well_cell=coordinate(row_number + 1, column - 1),
+                            plast_cell=coordinate(row_number, 1),
                         )
                     )
                     if normalized.base_well_id is None:
@@ -260,15 +285,25 @@ def read_fund(path: Path) -> FundParseResult:
                                 severity=IssueSeverity.WARNING,
                                 message=f"Не удалось нормализовать номер скважины {raw_value!r}.",
                                 source="fund",
-                                coordinate=f"{chr(64 + column)}{row_number + 1}",
+                                coordinate=coordinate(row_number + 1, column - 1),
+                                locations=(
+                                    cell_location(
+                                        source_file,
+                                        worksheet.title,
+                                        row_number + 1,
+                                        column - 1,
+                                    ),
+                                ),
                             )
                         )
-        duplicate_counts = Counter(
-            (well.base_well_id, well.normalized_field)
-            for well in wells
-            if well.base_well_id is not None
-        )
-        for (well_id, field_name), count in duplicate_counts.items():
+        duplicate_wells: dict[tuple[str | None, str], list[FundWell]] = {}
+        for well in wells:
+            if well.base_well_id is not None:
+                duplicate_wells.setdefault((well.base_well_id, well.normalized_field), []).append(
+                    well
+                )
+        for (well_id, field_name), occurrences in duplicate_wells.items():
+            count = len(occurrences)
             if count > 1:
                 issues.append(
                     DiagnosticIssue(
@@ -280,6 +315,9 @@ def read_fund(path: Path) -> FundParseResult:
                         ),
                         source="fund",
                         well_id=well_id,
+                        locations=tuple(
+                            location for well in occurrences for location in well.locations
+                        ),
                     )
                 )
         return FundParseResult(tuple(wells), fund_date, worksheet.title, tuple(issues))

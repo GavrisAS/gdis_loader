@@ -4,7 +4,10 @@ build-backend = "uv_build"
 
 [project]
 name = "gdis-loader"
-version = "0.1.0"
+version = "0.1"
+authors = [
+    { name = "Александр Гаврись" }
+]
 description = "Загрузчик исходных данных в лист 'Данные' калькулятора рейтингования скважин ГДИС"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"

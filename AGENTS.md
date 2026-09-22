@@ -134,6 +134,13 @@ GUI должен иметь:
 
 Долгие операции не должны «замораживать» окно: выполнять загрузку в worker thread, а UI обновлять безопасно через основной event loop.
 
+Внизу главного окна используется штатный `QStatusBar`, который постоянно
+показывает только `Версия MAJOR.MINOR` из `gdis_loader.__version__`; имя автора
+в GUI не выводится. Справа от кнопок действий находится `QProgressBar`.
+Каждый новый `validate`/`update` сбрасывает его в 0, получает только
+GUI-independent progress checkpoints от service и достигает 100 только при
+успехе. При ошибке значение не переводится в 100.
+
 ## Архитектура
 
 Сохранять разделение ответственности примерно следующего уровня:
@@ -207,6 +214,12 @@ src/gdis_loader/
 
 Не включать в лог большие выгрузки или потенциально чувствительные данные без необходимости.
 
+`DiagnosticIssue` хранит structured immutable `locations` из
+`SourceLocation(file, sheet, cell)`. Reader warning/error, связанный с исходным
+Excel, обязан указывать точный файл, лист и ячейку; для ошибок структуры книги
+допустимы `sheet=null`/`cell=null`, если физической ячейки нет. JSON сохраняет
+locations объектами, а text log выводит `file::sheet::cell`.
+
 ## Тесты
 
 Тестировать не только happy path.
@@ -264,6 +277,14 @@ Release/build workflow на Windows:
 4. собирает PyInstaller `onedir` приложение `GDIS_DataLoader`;
 5. архивирует каталог `dist/GDIS_DataLoader/` в ZIP;
 6. публикует ZIP как GitHub Actions artifact.
+
+Версии проекта и release tags строго двухкомпонентные: `MAJOR.MINOR` и
+`vMAJOR.MINOR`; PATCH не используется. MINOR — глобально монотонный счетчик и
+не сбрасывается при ручном изменении MAJOR. Workflow сначала вычисляет candidate,
+передает версию без `v` в build script, генерирует временный build-version module
+и проверяет её frozen smoke-test. После успешной сборки свободный tag создается
+на exact `github.sha`; занятый tag приводит к failure, существующий tag нельзя
+изменять, version-bump commit не создается.
 
 Никакого Python на целевом ПК требоваться не должно.
 

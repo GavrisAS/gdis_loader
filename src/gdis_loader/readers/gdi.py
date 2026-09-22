@@ -11,6 +11,7 @@ from gdis_loader.domain.models import DiagnosticIssue, GdiRecord, IssueSeverity
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.common import (
     as_text,
+    cell_location,
     coordinate,
     display_value,
     index_headers,
@@ -18,6 +19,7 @@ from gdis_loader.readers.common import (
     parse_datetime,
     row_is_empty,
     row_value,
+    sheet_location,
 )
 
 GDI_SHEET = "ГДИС_Сибнефтегаз в целом"
@@ -46,6 +48,7 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
     """Read only the required-width portion of the main GDI worksheet."""
 
     issues: list[DiagnosticIssue] = []
+    source_file = str(path.resolve())
     with openpyxl_read_warnings() as caught:
         workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
     issues.extend(
@@ -55,6 +58,7 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                 severity=IssueSeverity.WARNING,
                 message=str(warning.message),
                 source="gdi",
+                locations=(sheet_location(source_file, GDI_SHEET),),
             )
             for warning in caught
         ]
@@ -67,6 +71,7 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     severity=IssueSeverity.ERROR,
                     message=f"В книге ГДИ отсутствует лист {GDI_SHEET!r}.",
                     source="gdi",
+                    locations=(sheet_location(source_file, GDI_SHEET),),
                 )
             )
             return (), tuple(issues)
@@ -79,6 +84,7 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     severity=IssueSeverity.ERROR,
                     message="На основном листе ГДИ не найдены все обязательные заголовки.",
                     source="gdi",
+                    locations=(sheet_location(source_file, GDI_SHEET),),
                 )
             )
             return (), tuple(issues)
@@ -124,6 +130,14 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                         source="gdi",
                         coordinate=coordinate(row_number, columns["study_date"]),
                         well_id=base_id,
+                        locations=(
+                            cell_location(
+                                source_file,
+                                GDI_SHEET,
+                                row_number,
+                                columns["study_date"],
+                            ),
+                        ),
                     )
                 )
             elif raw_date_value is None and raw_well is not None:
@@ -137,6 +151,14 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                         source="gdi",
                         coordinate=coordinate(row_number, columns["study_date"]),
                         well_id=base_id,
+                        locations=(
+                            cell_location(
+                                source_file,
+                                GDI_SHEET,
+                                row_number,
+                                columns["study_date"],
+                            ),
+                        ),
                     )
                 )
             if raw_well is None or base_id is None:
@@ -147,6 +169,9 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                         message="В строке ГДИ отсутствует или не распознан номер скважины.",
                         source="gdi",
                         coordinate=coordinate(row_number, columns["well"]),
+                        locations=(
+                            cell_location(source_file, GDI_SHEET, row_number, columns["well"]),
+                        ),
                     )
                 )
             if raw_plast is None or normalize_plast(raw_plast) is None:
@@ -161,6 +186,9 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                         source="gdi",
                         coordinate=coordinate(row_number, columns["plast"]),
                         well_id=base_id,
+                        locations=(
+                            cell_location(source_file, GDI_SHEET, row_number, columns["plast"]),
+                        ),
                     )
                 )
             records.append(
@@ -179,6 +207,13 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     lnd_reliability=as_text(row_value(values, columns, "lnd_reliability")),
                     gtm_date=parse_datetime(row_value(values, columns, "gtm_date")),
                     source_row=row_number,
+                    source_file=source_file,
+                    source_sheet=GDI_SHEET,
+                    field_cell=coordinate(row_number, columns["field"]),
+                    well_cell=coordinate(row_number, columns["well"]),
+                    plast_cell=coordinate(row_number, columns["plast"]),
+                    date_cell=coordinate(row_number, columns["study_date"]),
+                    gtm_date_cell=coordinate(row_number, columns["gtm_date"]),
                 )
             )
         return tuple(records), tuple(issues)

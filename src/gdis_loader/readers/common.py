@@ -13,6 +13,8 @@ from datetime import date, datetime, time
 from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
+from gdis_loader.domain.models import SourceLocation
+
 _SPACE_RE = re.compile(r"\s+")
 OPENPYXL_CONDITIONAL_FORMATTING_WARNING = (
     "Conditional Formatting extension is not supported and will be removed"
@@ -100,6 +102,24 @@ def missing_header_names(
 
 def coordinate(row_number: int, column_index: int) -> str:
     return f"{get_column_letter(column_index + 1)}{row_number}"
+
+
+def cell_location(
+    source_file: str, source_sheet: str | None, row_number: int, column_index: int
+) -> SourceLocation:
+    """Return a structured source location for a zero-based Excel column."""
+
+    return SourceLocation(
+        file=source_file,
+        sheet=source_sheet,
+        cell=coordinate(row_number, column_index),
+    )
+
+
+def sheet_location(source_file: str, source_sheet: str | None) -> SourceLocation:
+    """Return a workbook/sheet location when no exact cell is available."""
+
+    return SourceLocation(file=source_file, sheet=source_sheet, cell=None)
 
 
 def row_is_empty(values: Sequence[object]) -> bool:

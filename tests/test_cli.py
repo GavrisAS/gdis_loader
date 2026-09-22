@@ -34,7 +34,7 @@ def test_validate_parser_accepts_log_path() -> None:
 def test_cli_validate_returns_nonzero_for_error_result(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     report = LoadReport(
         timestamp="now",
-        app_version="0.1.0",
+        app_version="0.1",
         python_version="3.14.0",
         input_paths={},
     )

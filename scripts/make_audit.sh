@@ -43,13 +43,19 @@ find "$stage" -type d \( \
     -name .ruff_cache -o -name .ty_cache -o -name build -o -name dist -o -name audit \) \
     -prune -exec rm -rf -- {} +
 
+rm -f "$stage/src/gdis_loader/_build_version.py"
+
 branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '%s' 'DETACHED')
 head_sha=$(git rev-parse HEAD 2>/dev/null || printf '%s' 'unavailable')
+source_version=$(uv run python -c 'from gdis_loader import SOURCE_VERSION; print(SOURCE_VERSION)' 2>/dev/null || printf '%s' 'unavailable')
+next_release=$(uv run python scripts/next_version.py 2>/dev/null || printf '%s' 'unavailable')
 {
     printf 'Local timestamp: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
     printf 'UTC timestamp: %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     printf 'Branch: %s\n' "$branch"
     printf 'HEAD: %s\n' "$head_sha"
+    printf 'Source/dev version: %s\n' "$source_version"
+    printf 'Calculated next release: %s\n' "$next_release"
     printf 'System Python: '
     python --version 2>&1 || true
     printf 'Project Python (uv): '
@@ -63,6 +69,8 @@ head_sha=$(git rev-parse HEAD 2>/dev/null || printf '%s' 'unavailable')
     printf '%s\n' 'Production data policy: real files under data/ are intentionally excluded; only data/README.md is bundled.'
 } > "$stage/AUDIT_INFO.txt"
 
+git tag --list > "$stage/GIT_TAGS.txt"
+git tag --points-at HEAD > "$stage/HEAD_TAGS.txt"
 git status --short --branch --untracked-files=all > "$stage/GIT_STATUS.txt"
 git diff --binary -- . ':(exclude)data' > "$stage/GIT_DIFF.patch"
 git diff --cached --binary -- . ':(exclude)data' > "$stage/GIT_DIFF_CACHED.patch"

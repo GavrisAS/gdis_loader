@@ -15,6 +15,7 @@ build/
 dist/
 *.spec
 audit/
+src/gdis_loader/_build_version.py
 
 # Runtime files
 config.toml

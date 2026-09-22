@@ -10,7 +10,13 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-from gdis_loader.domain.models import TARGET_FIELDS, DiagnosticIssue, IssueSeverity, SourcePaths
+from gdis_loader.domain.models import (
+    TARGET_FIELDS,
+    DiagnosticIssue,
+    IssueSeverity,
+    SourceLocation,
+    SourcePaths,
+)
 from gdis_loader.readers.common import normalized_header, openpyxl_read_warnings
 from gdis_loader.readers.daily import DAILY_SHEET, _find_daily_header
 from gdis_loader.readers.fund import DATE_SHEET_RE
@@ -41,7 +47,11 @@ class ValidationResult:
 
 def _path_issue(path: Path, code: str, message: str) -> DiagnosticIssue:
     return DiagnosticIssue(
-        code=code, severity=IssueSeverity.ERROR, message=message, source=str(path)
+        code=code,
+        severity=IssueSeverity.ERROR,
+        message=message,
+        source=str(path),
+        locations=(SourceLocation(file=str(path.resolve())),),
     )
 
 
@@ -77,7 +87,7 @@ def _check_path(path: Path, expected_suffixes: set[str], label: str) -> list[Dia
 def _load_schema(
     path: Path,
     label: str,
-    checker: Callable[[Any, list[DiagnosticIssue]], None],
+    checker: Callable[[Any, Path, list[DiagnosticIssue]], None],
     *,
     read_only: bool = True,
 ) -> list[DiagnosticIssue]:
@@ -92,12 +102,13 @@ def _load_schema(
                     severity=IssueSeverity.WARNING,
                     message=str(warning.message),
                     source=label,
+                    locations=(SourceLocation(file=str(path.resolve())),),
                 )
                 for warning in caught
             ]
         )
         try:
-            checker(workbook, issues)
+            checker(workbook, path, issues)
         finally:
             workbook.close()
     except (OSError, InvalidFileException, KeyError, TypeError, ValueError) as error:
@@ -107,12 +118,13 @@ def _load_schema(
                 severity=IssueSeverity.ERROR,
                 message=f"Не удалось открыть {label}: {error}.",
                 source=str(path),
+                locations=(SourceLocation(file=str(path.resolve())),),
             )
         )
     return issues
 
 
-def _check_calculator(workbook: Any, issues: list[DiagnosticIssue]) -> None:
+def _check_calculator(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> None:
     sheetnames = workbook.sheetnames  # type: ignore[attr-defined]
     if "Данные" not in sheetnames:
         issues.append(
@@ -121,6 +133,7 @@ def _check_calculator(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message="В калькуляторе отсутствует лист 'Данные'.",
                 source="calculator",
+                locations=(SourceLocation(file=str(path.resolve()), sheet="Данные"),),
             )
         )
         return
@@ -137,6 +150,7 @@ def _check_calculator(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message=f"В строке 6 калькулятора отсутствуют заголовки: {', '.join(missing)}.",
                 source="calculator",
+                locations=(SourceLocation(file=str(path.resolve()), sheet="Данные"),),
             )
         )
     if "tblData" not in worksheet.tables:
@@ -146,11 +160,12 @@ def _check_calculator(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message="На листе 'Данные' отсутствует таблица tblData.",
                 source="calculator",
+                locations=(SourceLocation(file=str(path.resolve()), sheet="Данные"),),
             )
         )
 
 
-def _check_fund(workbook: Any, issues: list[DiagnosticIssue]) -> None:
+def _check_fund(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> None:
     dated = [
         str(worksheet.title).strip()
         for worksheet in workbook.worksheets  # type: ignore[attr-defined]
@@ -164,11 +179,12 @@ def _check_fund(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message="В фонде отсутствует подходящий датированный лист.",
                 source="fund",
+                locations=(SourceLocation(file=str(path.resolve())),),
             )
         )
 
 
-def _check_gdi(workbook: Any, issues: list[DiagnosticIssue]) -> None:
+def _check_gdi(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> None:
     if GDI_SHEET not in workbook.sheetnames:  # type: ignore[attr-defined]
         issues.append(
             DiagnosticIssue(
@@ -176,6 +192,7 @@ def _check_gdi(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message=f"В книге ГДИ отсутствует лист {GDI_SHEET!r}.",
                 source="gdi",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=GDI_SHEET),),
             )
         )
         return
@@ -187,11 +204,12 @@ def _check_gdi(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message=f"На листе ГДИ не найдены обязательные заголовки: {aliases}.",
                 source="gdi",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=GDI_SHEET),),
             )
         )
 
 
-def _check_lha(workbook: Any, issues: list[DiagnosticIssue]) -> None:
+def _check_lha(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> None:
     if LHA_SHEET not in workbook.sheetnames:  # type: ignore[attr-defined]
         issues.append(
             DiagnosticIssue(
@@ -199,6 +217,7 @@ def _check_lha(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message=f"В книге ЛХА отсутствует лист {LHA_SHEET!r}.",
                 source="lha",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=LHA_SHEET),),
             )
         )
         return
@@ -210,11 +229,12 @@ def _check_lha(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message=f"На листе ЛХА не найдены обязательные заголовки: {aliases}.",
                 source="lha",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=LHA_SHEET),),
             )
         )
 
 
-def _check_daily(workbook: Any, issues: list[DiagnosticIssue]) -> None:
+def _check_daily(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> None:
     if DAILY_SHEET not in workbook.sheetnames:  # type: ignore[attr-defined]
         issues.append(
             DiagnosticIssue(
@@ -222,6 +242,7 @@ def _check_daily(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message=f"В суточном рапорте отсутствует лист {DAILY_SHEET!r}.",
                 source="daily_report",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=DAILY_SHEET),),
             )
         )
         return
@@ -232,6 +253,7 @@ def _check_daily(workbook: Any, issues: list[DiagnosticIssue]) -> None:
                 severity=IssueSeverity.ERROR,
                 message="На листе суточного рапорта не найдены заголовки ГСК и СКВ.",
                 source="daily_report",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=DAILY_SHEET),),
             )
         )
 

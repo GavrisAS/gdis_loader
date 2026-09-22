@@ -10,7 +10,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 _RELEASE_TAG = re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)$")
-_PROJECT_VERSION = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)(?:\.\d+)?(?:[-+].*)?$")
+_PROJECT_VERSION = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)$")
 
 
 def parse_release_tag(tag: str) -> tuple[int, int] | None:
@@ -23,9 +23,9 @@ def parse_release_tag(tag: str) -> tuple[int, int] | None:
 
 
 def parse_project_version(version: str) -> tuple[int, int]:
-    """Return the logical two-component version from a PEP 440-like value."""
+    """Return a strict ``(major, minor)`` project version."""
 
-    match = _PROJECT_VERSION.fullmatch(version.strip())
+    match = _PROJECT_VERSION.fullmatch(version)
     if match is None:
         raise ValueError(f"Project version is not numeric MAJOR.MINOR: {version!r}")
     return int(match.group("major")), int(match.group("minor"))
@@ -42,15 +42,11 @@ def next_version(tags: Iterable[str], project_version: str) -> str:
 
     project_major, project_minor = parse_project_version(project_version)
     versions = release_versions(tags)
-    if versions:
-        latest_major, latest_minor = max(versions)
-        # A manually changed project major is allowed to move the next release
-        # forward, while the largest observed minor remains the monotonic floor.
-        major = max(latest_major, project_major)
-        minor = max(latest_minor, project_minor)
-    else:
-        major, minor = project_major, project_minor
-    return f"v{major}.{minor + 1}"
+    observed_major = max((major for major, _minor in versions), default=project_major)
+    observed_minor = max((minor for _major, minor in versions), default=project_minor)
+    next_major = max(observed_major, project_major)
+    next_minor = max(observed_minor, project_minor) + 1
+    return f"v{next_major}.{next_minor}"
 
 
 def _git_tags() -> tuple[str, ...]:

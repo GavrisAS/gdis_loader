@@ -17,11 +17,13 @@ from gdis_loader.domain.models import (
     IssueSeverity,
     LoadReport,
     MatchStatus,
+    SourceLocation,
     SourcePaths,
     TargetRow,
 )
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
 from gdis_loader.matching.matcher import GdiIndex, match_all
+from gdis_loader.progress import ProgressCallback, ProgressUpdate
 from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.lha import LhaIndex, read_lha
@@ -137,11 +139,32 @@ def _append_issues(report: LoadReport, issues: Iterable[DiagnosticIssue]) -> Non
         if issue.severity is IssueSeverity.WARNING:
             report.warnings.append(issue.message)
         if issue.severity is IssueSeverity.INFO:
-            LOGGER.info("%s: %s", issue.code, issue.message)
+            LOGGER.info("%s", format_diagnostic_issue(issue))
         elif issue.severity is IssueSeverity.WARNING:
-            LOGGER.warning("%s: %s", issue.code, issue.message)
+            LOGGER.warning("%s", format_diagnostic_issue(issue))
         elif issue.severity is IssueSeverity.ERROR:
-            LOGGER.error("%s: %s", issue.code, issue.message)
+            LOGGER.error("%s", format_diagnostic_issue(issue))
+
+
+def format_diagnostic_issue(issue: DiagnosticIssue) -> str:
+    """Format one issue for a plain-text log without losing provenance."""
+
+    if not issue.locations:
+        return f"{issue.code}: {issue.message}"
+    locations = "; ".join(
+        "::".join(
+            part for part in (location.file, location.sheet, location.cell) if part is not None
+        )
+        for location in issue.locations
+    )
+    return (
+        f'{issue.severity.value.upper()} [{issue.code}] {issue.message} | locations="{locations}"'
+    )
+
+
+def _report_progress(progress: ProgressCallback | None, percent: int, stage: str) -> None:
+    if progress is not None:
+        progress(ProgressUpdate(percent, stage))
 
 
 def _write_report(report: LoadReport, path: Path) -> None:
@@ -167,12 +190,14 @@ def _write_report(report: LoadReport, path: Path) -> None:
 
 
 def _validation_failure(validation: ValidationResult) -> str:
-    return "\n".join(f"- {issue.message}" for issue in validation.errors)
+    return "\n".join(f"- {format_diagnostic_issue(issue)}" for issue in validation.errors)
 
 
 def _report_error_text(report: LoadReport) -> str:
     return "\n".join(
-        f"- {issue.message}" for issue in report.issues if issue.severity is IssueSeverity.ERROR
+        f"- {format_diagnostic_issue(issue)}"
+        for issue in report.issues
+        if issue.severity is IssueSeverity.ERROR
     )
 
 
@@ -225,6 +250,7 @@ def _build_target_rows(
                                 ),
                                 source="lha",
                                 well_id=fund_well.base_well_id,
+                                locations=fund_well.locations,
                             ),
                         ),
                     )
@@ -261,6 +287,7 @@ def _build_target_rows(
                     ),
                     source="fund",
                     well_id=fund_well.base_well_id,
+                    locations=fund_well.locations,
                 ),
             ),
         )
@@ -278,6 +305,15 @@ def _build_target_rows(
                         "листов калькулятора (100)."
                     ),
                     source="calculator",
+                    locations=(
+                        SourceLocation(
+                            file=report.input_paths.get("calculator", ""),
+                            sheet="Расчет",
+                            cell="A106:Z106",
+                        ),
+                    )
+                    if report.input_paths.get("calculator")
+                    else (),
                 ),
             ),
         )
@@ -285,9 +321,11 @@ def _build_target_rows(
 
 
 def _prepare(
-    paths: SourcePaths, report: LoadReport
+    paths: SourcePaths,
+    report: LoadReport,
+    progress: ProgressCallback | None = None,
 ) -> tuple[tuple[TargetRow, ...], FundParseResult]:
-    """Read the sources that currently contribute to the v0.1 target row.
+    """Read the sources that currently contribute to the target row.
 
     The daily report is schema-validated before this function is called, but
     its day values are intentionally not read here until the debit rule is
@@ -295,50 +333,74 @@ def _prepare(
     and avoids turning expected daily placeholders into runtime diagnostics.
     """
 
+    _report_progress(progress, 20, "Чтение фонда скважин")
     fund = read_fund(paths.fund)
     _append_issues(report, fund.issues)
+    _report_progress(progress, 35, "Чтение истории ГДИ")
     gdi_records, gdi_issues = read_gdi(paths.gdi)
     _append_issues(report, gdi_issues)
+    _report_progress(progress, 50, "Чтение базы ЛХА")
     lha_records, lha_issues = read_lha(paths.lha)
     _append_issues(report, lha_issues)
     report.fund_date = fund.fund_date
+    _report_progress(progress, 65, "Сопоставление скважин")
     target_rows = _build_target_rows(fund, GdiIndex(gdi_records), LhaIndex(lha_records), report)
+    _report_progress(progress, 80, "Подготовка итоговых строк")
     return target_rows, fund
 
 
-def run_validate(paths: SourcePaths, log_path: Path | None = None) -> ServiceResult:
-    """Validate schemas and, when possible, prepare v0.1 sources without writing Excel."""
+def run_validate(
+    paths: SourcePaths,
+    log_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+) -> ServiceResult:
+    """Validate schemas and, when possible, prepare sources without writing Excel."""
 
+    _report_progress(progress, 0, "Старт проверки")
     actual_log_path = configure_logging(log_path or paths.output.parent / "gdis_loader.log")
     report = _new_report(paths)
     report.log_path = str(actual_log_path.resolve())
     validation = validate_inputs(paths)
     _append_issues(report, validation.issues)
+    _report_progress(progress, 10, "Проверка путей и структуры файлов")
     if validation.valid:
-        _prepare(paths, report)
+        _prepare(paths, report, progress)
+        _report_progress(progress, 90, "Валидация результата")
     report.diagnostic_path = str(diagnostic_path(paths.output).resolve())
     _write_report(report, Path(report.diagnostic_path))
+    if validation.valid and not any(
+        issue.severity is IssueSeverity.ERROR for issue in report.issues
+    ):
+        _report_progress(progress, 100, "Проверка завершена")
     return ServiceResult(report)
 
 
-def run_update(paths: SourcePaths, log_path: Path | None = None) -> ServiceResult:
+def run_update(
+    paths: SourcePaths,
+    log_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+) -> ServiceResult:
     """Run the shared ETL pipeline and write a safe copy of the calculator."""
 
+    _report_progress(progress, 0, "Старт обновления")
     actual_log_path = configure_logging(log_path or paths.output.parent / "gdis_loader.log")
     report = _new_report(paths)
     report.log_path = str(actual_log_path.resolve())
     LOGGER.info("Начало обновления; output=%s", paths.output)
     validation = validate_inputs(paths)
     _append_issues(report, validation.issues)
+    _report_progress(progress, 10, "Проверка путей и структуры файлов")
     report.diagnostic_path = str(diagnostic_path(paths.output).resolve())
     if not validation.valid:
         _write_report(report, Path(report.diagnostic_path))
         raise ServiceError(f"Проверка файлов не пройдена:\n{_validation_failure(validation)}")
     try:
-        target_rows, _ = _prepare(paths, report)
+        target_rows, _ = _prepare(paths, report, progress)
         if any(issue.severity is IssueSeverity.ERROR for issue in report.issues):
             _write_report(report, Path(report.diagnostic_path))
             raise ServiceError(f"Чтение источников не пройдено:\n{_report_error_text(report)}")
+        _report_progress(progress, 90, "Валидация результата")
+        _report_progress(progress, 95, "Запись листа Данные")
         writer_result: TargetWriteResult = write_target_rows(
             paths.calculator, paths.output, target_rows
         )
@@ -346,6 +408,7 @@ def run_update(paths: SourcePaths, log_path: Path | None = None) -> ServiceResul
         report.output_path = str(paths.output.resolve())
         _write_report(report, Path(report.diagnostic_path))
         LOGGER.info("Обновление завершено: %s", report.output_path)
+        _report_progress(progress, 100, "Обновление завершено")
         return ServiceResult(report, paths.output)
     except (OSError, ValueError, KeyError, TypeError) as error:
         message = str(error)
@@ -362,6 +425,13 @@ def run_update(paths: SourcePaths, log_path: Path | None = None) -> ServiceResul
                     severity=IssueSeverity.ERROR,
                     message=message,
                     source="calculator",
+                    locations=(
+                        SourceLocation(
+                            file=str(paths.calculator.resolve()),
+                            sheet="Данные",
+                            cell=None,
+                        ),
+                    ),
                 ),
             ),
         )

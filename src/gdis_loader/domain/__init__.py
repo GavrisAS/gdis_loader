@@ -15,6 +15,7 @@ from gdis_loader.domain.models import (
     LoadReport,
     MatchResult,
     MatchStatus,
+    SourceLocation,
     SourcePaths,
     TargetRow,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "LoadReport",
     "MatchResult",
     "MatchStatus",
+    "SourceLocation",
     "SourcePaths",
     "TargetRow",
 ]
