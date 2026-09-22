@@ -42,7 +42,10 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.matched == 128
     assert result.report.no_gdi == 1
     assert result.report.ambiguous == 0
+    assert result.report.with_lha_cl == 103
+    assert result.report.with_lha_vgf == 105
     assert result.report.rows_written == 129
+    assert not any(issue.severity is IssueSeverity.ERROR for issue in result.report.issues)
     warning_distribution = Counter(
         issue.code for issue in result.report.issues if issue.severity is IssueSeverity.WARNING
     )
