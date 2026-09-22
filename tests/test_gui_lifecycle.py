@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QApplication  # ty: ignore[unresolved-import, unused-ignore-comment]
 
 import gdis_loader.gui.app as gui_app
@@ -131,6 +132,51 @@ def test_worker_progress_signal_updates_bar_and_reset_starts_at_zero(
     window._progress_bar.setValue(83)
     window._reset_progress()
     assert window._progress_bar.value() == 0
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "operation"),
+    (("_validate", "Проверка файлов"), ("_update", "Обновление данных")),
+)
+def test_start_resets_progress_when_config_persist_fails(
+    monkeypatch, method_name: str, operation: str
+) -> None:  # type: ignore[no-untyped-def]
+    window = _window(monkeypatch)
+    window._progress_bar.setValue(100)
+    monkeypatch.setattr(window, "_persist_config", lambda **_kwargs: False)
+
+    getattr(window, method_name)()
+
+    assert window._progress_bar.value() == 0
+    assert not window._busy
+    assert window._thread is None
+    assert window._operation is None
+    assert operation not in window._status_box.toPlainText()
+    window.close()
+
+
+def test_start_resets_progress_when_log_preparation_fails(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class _MessageBox:
+        @staticmethod
+        def critical(*_args: object, **_kwargs: object) -> None:
+            return None
+
+    def _raise_path_error() -> SourcePaths:
+        raise OSError("не удалось подготовить путь")
+
+    monkeypatch.setattr(gui_app, "QMessageBox", _MessageBox)
+    window = _window(monkeypatch)
+    window._progress_bar.setValue(100)
+    monkeypatch.setattr(window, "_persist_config", lambda **_kwargs: True)
+    monkeypatch.setattr(window, "_paths", _raise_path_error)
+
+    window._start(lambda _paths: _result(), "Проверка файлов")
+
+    assert window._progress_bar.value() == 0
+    assert not window._busy
+    assert window._thread is None
+    assert window._operation is None
     window.close()
 
 

@@ -270,17 +270,19 @@ class LoaderWindow(QMainWindow):
     def _start(self, action: _ServiceAction, operation: str) -> None:
         if self._busy:
             return
+        self._operation = operation
+        self._reset_progress()
         if not self._persist_config(show_error=True):
+            self._operation = None
             return
         try:
             paths = self._paths()
             configure_logging(paths.output.parent / "gdis_loader.log")
         except (OSError, ValueError) as error:
+            self._operation = None
             QMessageBox.critical(self, operation, f"Не удалось подготовить запуск: {error}")
             return
 
-        self._operation = operation
-        self._reset_progress()
         self._set_busy(True)
         self._set_status(f"{operation}: чтение Excel выполняется в фоне…")
         thread = QThread(self)

@@ -207,10 +207,11 @@ def read_fund(path: Path) -> FundParseResult:
                 issues.append(
                     DiagnosticIssue(
                         code="FUND_CATEGORY_J_IGNORED",
-                        severity=IssueSeverity.WARNING,
+                        severity=IssueSeverity.INFO,
                         message=(
-                            "Колонка J (освоение/ожидание освоения) обнаружена и намеренно "
-                            "не включена в текущий базовый scope."
+                            "Колонка J (освоение/ожидание освоения) не включена в фонд "
+                            "рейтингования: по исходному README рейтингованию подлежит "
+                            "действующий + бездействующий фонд."
                         ),
                         source="fund",
                         coordinate=coordinate(row_number + 1, 9),

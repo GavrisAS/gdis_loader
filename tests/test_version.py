@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import pytest
 
+from gdis_loader import SOURCE_VERSION
 from gdis_loader.versioning import next_version, parse_project_version, parse_release_tag
 
 
@@ -9,6 +13,14 @@ def test_project_version_is_strictly_two_component() -> None:
     assert parse_project_version("0.1") == (0, 1)
     assert parse_project_version("1.38") == (1, 38)
     assert parse_project_version("12.104") == (12, 104)
+
+
+def test_source_version_matches_project_version() -> None:
+    with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as stream:
+        project_version = str(tomllib.load(stream)["project"]["version"])
+
+    assert project_version == SOURCE_VERSION
+    assert parse_project_version(SOURCE_VERSION) == parse_project_version(project_version)
 
 
 @pytest.mark.parametrize(

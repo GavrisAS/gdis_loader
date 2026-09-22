@@ -5,7 +5,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from gdis_loader.domain.models import FundCategory
+from gdis_loader.domain.models import FundCategory, IssueSeverity, SourceLocation
 from gdis_loader.readers.fund import parse_well_list_cell, read_fund
 
 
@@ -61,7 +61,13 @@ def test_fund_chooses_latest_non_rspn_sheet_and_all_categories(tmp_path: Path) -
     assert result.wells[0].object_plast_hint == "ПК1"
     assert not any(well.raw_display == "018" for well in result.wells)
     assert not any(issue.code == "FUND_COUNT_MISMATCH" for issue in result.issues)
-    assert any(issue.code == "FUND_CATEGORY_J_IGNORED" for issue in result.issues)
+    j_issue = next(issue for issue in result.issues if issue.code == "FUND_CATEGORY_J_IGNORED")
+    assert j_issue.severity is IssueSeverity.INFO
+    assert j_issue.message == (
+        "Колонка J (освоение/ожидание освоения) не включена в фонд рейтингования: "
+        "по исходному README рейтингованию подлежит действующий + бездействующий фонд."
+    )
+    assert j_issue.locations == (SourceLocation(str(path.resolve()), "02.02.2025", "J12"),)
 
 
 def test_fund_count_mismatch_is_diagnostic(tmp_path: Path) -> None:
