@@ -121,6 +121,73 @@ def test_zbs_and_pvlg_resolve_to_distinct_launch_stages() -> None:
     assert pvlg.stage.started_at == PartialDate(2023, 6, 1, DatePrecision.DAY)
 
 
+def test_unsuffixed_gdi_after_zbs_maps_by_date_and_exact_plast() -> None:
+    resolution = resolve_lifecycle_stage(
+        _fund("051"), _record("51", datetime(2022, 5, 1), "ПК1"), (_history(),)
+    )
+
+    assert resolution.issue is None
+    assert resolution.stage is not None
+    assert resolution.stage.event_kind is WellEventKind.ZBS
+    assert resolution.stage.source_location == SourceLocation("history.xlsx", "БЛУ", "I4")
+
+
+def test_unsuffixed_gdi_same_month_as_boundary_is_ambiguous() -> None:
+    history = _history()
+    stage = replace(
+        history.stages[1],
+        started_at=PartialDate(2021, 3, None, DatePrecision.MONTH),
+    )
+    modified = replace(history, stages=(history.stages[0], stage, history.stages[2]))
+
+    resolution = resolve_lifecycle_stage(
+        _fund("051"), _record("51", datetime(2021, 3, 20), "ПК1"), (modified,)
+    )
+
+    assert resolution.stage is None
+    assert resolution.issue is not None
+    assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
+
+
+def test_unsuffixed_gdi_with_unresolved_plast_equivalence_is_not_assigned() -> None:
+    resolution = resolve_lifecycle_stage(
+        _fund("051"), _record("51", datetime(2022, 5, 1), "ПК1-1"), (_history(),)
+    )
+
+    assert resolution.stage is None
+    assert resolution.issue is not None
+    assert resolution.issue.code == "UNRESOLVED_PLAST_EQUIVALENCE"
+
+
+def test_status_partial_date_after_boundary_can_assign_but_boundary_month_cannot() -> None:
+    history = _history()
+    location = SourceLocation("status.xlsx", "АР_таблица_БЛУ", "D12")
+
+    after_boundary = assign_stage_by_date(
+        physical_root="51",
+        normalized_field="береговое",
+        normalized_plast="ПК1",
+        observed_at=PartialDate(2021, 4, None, DatePrecision.MONTH),
+        histories=(history,),
+        observation_location=location,
+    )
+    boundary_month = assign_stage_by_date(
+        physical_root="51",
+        normalized_field="береговое",
+        normalized_plast="ПК1",
+        observed_at=PartialDate(2021, 3, None, DatePrecision.MONTH),
+        histories=(history,),
+        observation_location=location,
+    )
+
+    assert after_boundary.stage is not None
+    assert after_boundary.stage.event_kind is WellEventKind.ZBS
+    assert after_boundary.issue is None
+    assert boundary_month.stage is None
+    assert boundary_month.issue is not None
+    assert boundary_month.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
+
+
 def test_mzs_does_not_inherit_parent_launch_history() -> None:
     resolution = resolve_lifecycle_stage(
         _fund("051_МЗС"), _record("51_МЗС", datetime(2024, 5, 1)), (_history(),)

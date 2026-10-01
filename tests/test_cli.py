@@ -25,12 +25,39 @@ def test_validate_parser_accepts_log_path() -> None:
             "daily.xlsm",
             "--well-history",
             "well-history.xlsx",
+            "--research-status",
+            "research-status.xlsx",
             "--log",
             "custom.log",
         ]
     )
 
     assert args.log == Path("custom.log")
+
+
+def test_update_parser_requires_explicit_field() -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.build_parser().parse_args(
+            [
+                "update",
+                "--calculator",
+                "calculator.xlsx",
+                "--fund",
+                "fund.xlsx",
+                "--gdi",
+                "gdi.xlsx",
+                "--lha",
+                "lha.xlsm",
+                "--daily-report",
+                "daily.xlsm",
+                "--well-history",
+                "well-history.xlsx",
+                "--research-status",
+                "research-status.xlsx",
+            ]
+        )
+
+    assert raised.value.code == 2
 
 
 def test_cli_validate_returns_nonzero_for_error_result(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
@@ -70,6 +97,8 @@ def test_cli_validate_returns_nonzero_for_error_result(monkeypatch, capsys) -> N
                 "daily.xlsm",
                 "--well-history",
                 "well-history.xlsx",
+                "--research-status",
+                "research-status.xlsx",
                 "--log",
                 "custom.log",
             ]

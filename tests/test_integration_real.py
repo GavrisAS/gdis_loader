@@ -9,7 +9,7 @@ import pytest
 from gdis_loader.domain.models import IssueSeverity, SourcePaths
 from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
 from gdis_loader.readers.lha import LhaIndex, read_lha
-from gdis_loader.service import run_update
+from gdis_loader.service import run_update, run_validate
 
 DATA_ROOT = Path(__file__).parents[1] / "data"
 REAL_FILES = (
@@ -19,6 +19,7 @@ REAL_FILES = (
     DATA_ROOT / "База ЛХА_Итог!.xlsm",
     DATA_ROOT / "07.2026 Cуточный рапорт БГП_полный.xlsm",
     DATA_ROOT / "Ответы на вопросы" / "2026-09-30_ответы_v1" / "База по скважинам.xlsx",
+    DATA_ROOT / "Ответы на вопросы" / "2026-10-01_ответы_v1.1" / "Статус исследований_2026.xlsx",
 )
 
 
@@ -34,21 +35,33 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         lha=REAL_FILES[3],
         daily_report=REAL_FILES[4],
         well_history=REAL_FILES[5],
+        research_status=REAL_FILES[6],
         output=output,
     )
 
-    result = run_update(paths, tmp_path / "loader.log", calculation_date=date(2026, 10, 1))
+    result = run_update(
+        paths,
+        tmp_path / "loader.log",
+        target_field="Береговое",
+        calculation_date=date(2026, 10, 1),
+    )
 
     assert result.report.calculation_date == date(2026, 10, 1)
     assert result.report.fund_total_source == 129
     assert result.report.fund_total == 129
     assert result.report.target_field == "Береговое"
-    assert result.report.target_field_fund_total == result.report.rows_prepared
+    assert result.report.target_field_fund_total == 109
+    assert result.report.rating_eligible == 78
+    assert result.report.rating_not_eligible == 31
+    assert result.report.rows_prepared == 78
     assert result.report.rows_written == result.report.rows_prepared
-    assert (
-        result.report.rating_eligible + result.report.rating_not_eligible
-        == result.report.rows_prepared
-    )
+    assert result.report.gdi_kind_counts == {
+        "EXCLUDED": 209,
+        "ID": 32,
+        "ID_KVD": 867,
+        "KVD": 702,
+        "UNKNOWN": 22,
+    }
     assert result.report.well_history_records > 0
     assert result.report.well_history_gtm_events > 0
     assert result.report.gdi_kind_counts
@@ -85,6 +98,37 @@ def test_real_bundle_update(tmp_path: Path) -> None:
             if source_archive.read(name) != output_archive.read(name)
         }
     assert changed_entries == {"xl/worksheets/sheet3.xml", "xl/tables/table2.xml"}
+
+
+@pytest.mark.skipif(
+    not all(path.is_file() for path in REAL_FILES), reason="real data files are not present"
+)
+def test_real_validation_discovers_fields_from_fund_and_reports_coverage(tmp_path: Path) -> None:
+    paths = SourcePaths(
+        calculator=REAL_FILES[0],
+        fund=REAL_FILES[1],
+        gdi=REAL_FILES[2],
+        lha=REAL_FILES[3],
+        daily_report=REAL_FILES[4],
+        well_history=REAL_FILES[5],
+        research_status=REAL_FILES[6],
+        output=None,
+    )
+
+    result = run_validate(paths, tmp_path / "validate.log", calculation_date=date(2026, 10, 1))
+
+    assert set(result.report.available_fields) == {
+        "Береговое",
+        "Хадырьяхинское",
+        "Пырейное",
+    }
+    assert set(result.report.field_coverage) == set(result.report.available_fields)
+    assert all(
+        isinstance(entry["fund_rows"], int) and entry["fund_rows"] > 0
+        for entry in result.report.field_coverage.values()
+    )
+    assert result.report.output_path is None
+    assert "UPDATED_" not in (result.report.input_paths.get("output") or "")
 
 
 @pytest.mark.skipif(

@@ -5,6 +5,9 @@ from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
+
+import gdis_loader.service as service
 from gdis_loader.domain.models import (
     DatePrecision,
     DiagnosticIssue,
@@ -17,16 +20,26 @@ from gdis_loader.domain.models import (
     LhaRecord,
     LoadReport,
     PartialDate,
+    ResearchStatusRecord,
     SourceLocation,
     SourcePaths,
     WellEventKind,
     WellHistory,
+    WellHistoryParseResult,
     WellStage,
 )
+from gdis_loader.excel.writer import TargetWriteResult
 from gdis_loader.matching.matcher import GdiIndex
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.lha import LhaIndex
-from gdis_loader.service import ServiceResult, _append_issues, _build_target_rows, run_validate
+from gdis_loader.service import (
+    ServiceResult,
+    _append_issues,
+    _build_target_rows,
+    default_output_path,
+    run_validate,
+)
+from gdis_loader.validation.sources import ValidationResult
 
 
 def _paths(tmp_path: Path) -> SourcePaths:
@@ -37,8 +50,23 @@ def _paths(tmp_path: Path) -> SourcePaths:
         lha=tmp_path / "lha.xlsm",
         daily_report=tmp_path / "daily.xlsm",
         well_history=tmp_path / "well_history.xlsx",
+        research_status=tmp_path / "research_status.xlsx",
         output=tmp_path / "result.xlsx",
     )
+
+
+def _stub_empty_update(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        service,
+        "validate_inputs",
+        lambda _paths, *_args: ValidationResult((), ("Пырейное",)),
+    )
+    monkeypatch.setattr(service, "read_fund", lambda _path: FundParseResult((), None, None))
+    monkeypatch.setattr(service, "read_gdi", lambda _path: ((), ()))
+    monkeypatch.setattr(service, "read_lha", lambda _path: ((), ()))
+    monkeypatch.setattr(service, "read_research_status", lambda *_args: ((), ()))
+    monkeypatch.setattr(service, "read_well_history", lambda *_args: WellHistoryParseResult(()))
+    monkeypatch.setattr(service, "_build_target_rows", lambda *_args: ())
 
 
 def _fund_identity(
@@ -137,6 +165,60 @@ def test_validate_does_not_claim_that_rows_were_written(tmp_path: Path) -> None:
     assert Path(result.report.diagnostic_path or "").is_file()
 
 
+def test_default_output_name_is_field_specific_and_safe(tmp_path: Path) -> None:
+    calculator = tmp_path / "GDIS_Rating_Calculator_FIXED.xlsx"
+
+    assert default_output_path(calculator, "Береговое") == tmp_path / (
+        "GDIS_Rating_Calculator_FIXED_UPDATED_Береговое.xlsx"
+    )
+    assert default_output_path(calculator, "Пырейное") == tmp_path / (
+        "GDIS_Rating_Calculator_FIXED_UPDATED_Пырейное.xlsx"
+    )
+    assert default_output_path(calculator, "ЛУ / тест:  вопрос") == tmp_path / (
+        "GDIS_Rating_Calculator_FIXED_UPDATED_ЛУ_тест_вопрос.xlsx"
+    )
+    assert default_output_path(calculator, 'ЛУ/\\:*?"<>| test') == tmp_path / (
+        "GDIS_Rating_Calculator_FIXED_UPDATED_ЛУ_test.xlsx"
+    )
+
+
+def test_update_generates_field_specific_path_only_when_output_is_blank(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    _stub_empty_update(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "write_target_rows",
+        lambda _source, output, _rows: TargetWriteResult(output, 0),
+    )
+    paths = replace(_paths(tmp_path), output=None)
+
+    result = service.run_update(paths, target_field="Пырейное")
+
+    expected = tmp_path / "calculator_UPDATED_Пырейное.xlsx"
+    assert result.output_path == expected
+    assert result.report.output_path == str(expected.resolve())
+    assert Path(result.report.diagnostic_path or "") == expected.with_suffix(".load-report.json")
+
+
+def test_update_keeps_explicit_output_path_without_field_suffix(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    _stub_empty_update(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "write_target_rows",
+        lambda _source, output, _rows: TargetWriteResult(output, 0),
+    )
+    explicit = tmp_path / "custom-result.xlsx"
+    paths = replace(_paths(tmp_path), output=explicit)
+
+    result = service.run_update(paths, target_field="Пырейное")
+
+    assert result.output_path == explicit
+    assert result.report.output_path == str(explicit.resolve())
+
+
 def test_service_result_exposes_errors_and_capacity_warning() -> None:
     issue = DiagnosticIssue(
         code="DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY",
@@ -216,6 +298,7 @@ def test_warning_list_contains_only_warning_messages() -> None:
         app_version="0.1",
         python_version="3.14.0",
         input_paths={},
+        target_field="Береговое",
     )
 
     _append_issues(report, (warning, info))
@@ -291,6 +374,7 @@ def test_lha_duplicate_timestamp_uses_max_without_not_found_issue() -> None:
         app_version="0.1",
         python_version="3.14.0",
         input_paths={},
+        target_field=field,
     )
 
     rows = _build_target_rows(
@@ -321,6 +405,7 @@ def test_target_scope_excludes_other_fields_before_collision_checks() -> None:
         app_version="0.1",
         python_version="3.14",
         input_paths={},
+        target_field="Береговое",
     )
 
     rows = _build_target_rows(
@@ -350,6 +435,7 @@ def test_target_scope_keeps_only_beregovoe_rows() -> None:
         app_version="0.1",
         python_version="3.14",
         input_paths={},
+        target_field="Береговое",
     )
 
     _build_target_rows(
@@ -361,6 +447,141 @@ def test_target_scope_keeps_only_beregovoe_rows() -> None:
 
     assert report.target_field_fund_total == 1
     assert not any(issue.code == "TARGET_IDENTITY_COLLISION" for issue in report.issues)
+
+
+def test_only_confirmed_producing_and_current_period_stopped_rows_are_written() -> None:
+    categories = (
+        FundCategory.PRODUCING,
+        FundCategory.PRODUCING_GAS,
+        FundCategory.STOPPED_IN_REPORTING_MONTH,
+        FundCategory.INACTIVE_CURRENT_YEAR,
+        FundCategory.INACTIVE_PREVIOUS_YEARS,
+    )
+    wells = tuple(
+        replace(
+            _fund_identity("Береговое", raw_well=str(index), base_well_id=str(index), row=index),
+            source_category=category,
+        )
+        for index, category in enumerate(categories, 1)
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult(wells, date(2026, 8, 1), "01.08.2026"),
+        GdiIndex(()),
+        LhaIndex(()),
+        report,
+    )
+
+    assert report.target_field_fund_total == 5
+    assert report.rating_eligible == 3
+    assert report.rating_not_eligible == 2
+    assert len(rows) == 3
+    assert [row.state for row in rows] == [
+        "Дающие газ",
+        "Дающие газ",
+        "Остановленные в отчетном периоде",
+    ]
+
+
+def test_no_gdi_with_day_launch_writes_zero_count_and_duration_with_provenance() -> None:
+    fund_well = _fund_identity("Береговое")
+    launch = PartialDate(2020, 1, 1, DatePrecision.DAY)
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+    calculation = date(2026, 10, 1)
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex(()),
+        LhaIndex(()),
+        report,
+        (_history_stage(launch),),
+        calculation,
+    )
+
+    assert rows[0].gdi_count == 0
+    assert rows[0].insufficient_gdi == "Да"
+    assert rows[0].duration_without_gdi == (calculation - date(2020, 1, 1)).days / 365
+    assert rows[0].specific_gdi_count is None
+    assert report.gdi_count_filled == 1
+    assert report.insufficient_gdi_yes == 1
+    assert any(issue.code == "GDI_SPECIFIC_RATE_ZERO_COUNT" for issue in report.issues)
+    count_provenance = next(
+        item for item in report.field_provenance if item["field"] == "Количество ГДИ"
+    )
+    assert count_provenance["locations"] == [SourceLocation("history.xlsx", "БЛУ", "C3").to_dict()]
+
+
+def test_no_gdi_with_month_launch_has_no_synthetic_duration_date() -> None:
+    fund_well = _fund_identity("Береговое")
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex(()),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 7, None, DatePrecision.MONTH)),),
+        date(2026, 10, 1),
+    )
+
+    assert rows[0].launch_date is None
+    assert rows[0].duration_without_gdi is None
+    assert any(issue.code == "NO_GDI_LAUNCH_PRECISION" for issue in report.issues)
+
+
+def test_gdm_status_row_is_audited_but_target_stays_blank() -> None:
+    fund_well = _fund_identity("Береговое")
+    gdi_record = replace(_gdi_identity("Береговое", when=datetime(2025, 1, 1)), source_row=200)
+    initial_history = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
+    zbs_stage = replace(
+        initial_history.stages[0],
+        target_well_id=None,
+        event_kind=WellEventKind.ZBS,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "I3"),
+    )
+    history = replace(initial_history, stages=(initial_history.stages[0], zbs_stage))
+    status_record = ResearchStatusRecord(
+        raw_well_name="22",
+        base_well_id="22",
+        target_well_id="22",
+        raw_plast="ПК-1",
+        normalized_plast="ПК1",
+        research_type="ИД",
+        study_date=PartialDate(2024, 1, None, DatePrecision.MONTH),
+        delta_raw=6.0,
+        delta_value=6.0,
+        delta_formula_without_cache=False,
+        source_row=12,
+        source_file="status.xlsx",
+        source_sheet="АР_таблица_БЛУ",
+        well_cell="A12",
+        plast_cell="B12",
+        research_type_cell="C12",
+        date_cell="D12",
+        delta_cell="J12",
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((gdi_record,)),
+        LhaIndex(()),
+        report,
+        (history,),
+        date(2026, 10, 1),
+        (status_record,),
+    )
+
+    assert rows[0].gdm_problems is None
+    assert rows[0].well == "22_ЗБС"
+    assert report.gdm_rows_per_target == {"22_ЗБС": 1}
+    assert report.gdm_unique_candidate_identities == 1
+    assert report.gdm_multiple_candidate_identities == 0
+    issue = next(issue for issue in report.issues if issue.code == "GDM_CURRENT_ROW_UNRESOLVED")
+    assert SourceLocation("status.xlsx", "АР_таблица_БЛУ", "J12") in issue.locations
 
 
 def test_mzs_is_a_distinct_target_identity_from_parent() -> None:
@@ -389,6 +610,7 @@ def test_mzs_is_a_distinct_target_identity_from_parent() -> None:
         app_version="0.1",
         python_version="3.14",
         input_paths={},
+        target_field="Береговое",
     )
 
     rows = _build_target_rows(
@@ -416,7 +638,7 @@ def test_confirmed_launch_lnd_depth_and_temporary_gtm_are_written() -> None:
         lnd_reliability_cell="AW100",
         depth_cell="N100",
     )
-    report = LoadReport("now", "0.1", "3.14", {})
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
 
     rows = _build_target_rows(
         FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
@@ -436,6 +658,164 @@ def test_confirmed_launch_lnd_depth_and_temporary_gtm_are_written() -> None:
     assert report.downhole_no == 1
 
 
+def test_id_kvd_counts_once_and_updates_both_duration_groups() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 3, 1)),
+        gdi_kind=GdiKind.ID_KVD,
+        productivity_a_value=1.25,
+        productivity_a_cell="AA100",
+        source_row=100,
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+    operation_date = date(2026, 10, 1)
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+        operation_date,
+    )
+
+    assert rows[0].gdi_count == 1
+    assert rows[0].insufficient_gdi == "Да"
+    assert rows[0].duration_without_id == (operation_date - date(2025, 3, 1)).days / 365
+    assert rows[0].duration_without_kvd == rows[0].duration_without_id
+    assert report.duration_without_id_filled == 1
+    assert report.duration_without_kvd_filled == 1
+
+
+def test_duration_without_missing_gdi_class_stays_blank_with_diagnostic() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 3, 1)),
+        gdi_kind=GdiKind.KVD,
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+    calculation = date(2026, 10, 1)
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+        calculation,
+    )
+
+    assert rows[0].duration_without_id is None
+    assert rows[0].duration_without_kvd == (calculation - date(2025, 3, 1)).days / 365
+    assert any(issue.code == "NO_ID_HISTORY" for issue in report.issues)
+
+
+def test_productivity_uses_last_two_numeric_coefficients_and_records_provenance() -> None:
+    fund_well = _fund_identity("Береговое")
+    previous = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 1, 1), row=100),
+        productivity_a_value=0.8,
+        productivity_a_cell="AA100",
+        source_row=100,
+    )
+    current = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 2, 1), row=101),
+        productivity_a_value=0.9,
+        productivity_a_cell="AA101",
+        source_row=101,
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((previous, current)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+        date(2026, 10, 1),
+    )
+
+    assert rows[0].productivity_decline == "Да"
+    provenance = next(
+        item for item in report.field_provenance if item["field"] == "Снижение продуктивности"
+    )
+    assert [location["cell"] for location in provenance["locations"]] == [
+        "E100",
+        "AA100",
+        "E101",
+        "AA101",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("current", "previous", "expected"),
+    [
+        (3001.0, 2000.0, "Да"),
+        (2000.0, 0.0, "Нет"),
+        (3000.0, 2000.0, "Нет"),
+        (1500.0, 2600.0, "Нет"),
+        (3001.0, None, None),
+    ],
+)
+def test_chlorine_growth_is_strict_and_requires_two_values(
+    current: float, previous: float | None, expected: str | None
+) -> None:
+    fund_well = _fund_identity("Береговое")
+    gdi_record = _gdi_identity("Береговое")
+    lha_records: list[LhaRecord] = []
+    if previous is not None:
+        lha_records.append(
+            LhaRecord(
+                raw_field_name="Береговое",
+                normalized_field="береговое",
+                raw_well_name="22",
+                base_well_id="22",
+                raw_plast="ПК1",
+                normalized_plast="ПК1",
+                measured_at=datetime(2024, 1, 1),
+                cl_value=previous,
+                vgf_value=None,
+                source_row=10,
+                source_file="lha.xlsm",
+                source_sheet="БД Сибнефтегаз",
+                cl_cell="U10",
+            )
+        )
+    lha_records.append(
+        LhaRecord(
+            raw_field_name="Береговое",
+            normalized_field="береговое",
+            raw_well_name="22",
+            base_well_id="22",
+            raw_plast="ПК1",
+            normalized_plast="ПК1",
+            measured_at=datetime(2024, 2, 1),
+            cl_value=current,
+            vgf_value=None,
+            source_row=11,
+            source_file="lha.xlsm",
+            source_sheet="БД Сибнефтегаз",
+            cl_cell="U11",
+        )
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((gdi_record,)),
+        LhaIndex(lha_records),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+    )
+
+    assert rows[0].chlorine_growth == expected
+    if expected is None:
+        assert any(issue.code == "CHLORINE_INSUFFICIENT_HISTORY" for issue in report.issues)
+    else:
+        provenance = next(item for item in report.field_provenance if item["field"] == "Рост хлора")
+        assert {location["cell"] for location in provenance["locations"]} == {"U10", "U11"}
+
+
 def test_lnd_positive_condition_succeeds_when_second_value_is_missing() -> None:
     fund_well = _fund_identity("Береговое")
     record = replace(
@@ -448,7 +828,7 @@ def test_lnd_positive_condition_succeeds_when_second_value_is_missing() -> None:
         lnd_reliability_cell="AW100",
         depth_cell="N100",
     )
-    report = LoadReport("now", "0.1", "3.14", {})
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
 
     rows = _build_target_rows(
         FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
@@ -476,7 +856,7 @@ def test_lnd_and_depth_unknowns_stay_blank_with_source_cells() -> None:
         lnd_reliability_cell="AW100",
         depth_cell="N100",
     )
-    report = LoadReport("now", "0.1", "3.14", {})
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
 
     rows = _build_target_rows(
         FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
@@ -504,7 +884,7 @@ def test_lnd_and_depth_unknowns_stay_blank_with_source_cells() -> None:
 def test_month_precision_launch_stays_blank_with_exact_provenance() -> None:
     fund_well = _fund_identity("Береговое")
     record = replace(_gdi_identity("Береговое"), date_cell="E100")
-    report = LoadReport("now", "0.1", "3.14", {})
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
 
     rows = _build_target_rows(
         FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
@@ -529,7 +909,7 @@ def test_same_month_launch_and_gdi_is_lifecycle_ambiguous() -> None:
         date_cell="E100",
     )
     history = _history_stage(PartialDate(2023, 6, None, DatePrecision.MONTH))
-    report = LoadReport("now", "0.1", "3.14", {})
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
 
     rows = _build_target_rows(
         FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),

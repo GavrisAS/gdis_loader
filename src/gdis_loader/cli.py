@@ -6,10 +6,10 @@ import argparse
 from pathlib import Path
 
 from gdis_loader.domain.models import SourcePaths
-from gdis_loader.service import ServiceError, default_output_path, run_update, run_validate
+from gdis_loader.service import ServiceError, run_update, run_validate
 
 
-def _add_source_arguments(parser: argparse.ArgumentParser, *, output_required: bool) -> None:
+def _add_source_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calculator", required=True, type=Path, help="Исходный калькулятор .xlsx")
     parser.add_argument("--fund", required=True, type=Path, help="Фонд скважин .xlsx")
     parser.add_argument("--gdi", required=True, type=Path, help="Сводная таблица ГДИ .xlsx")
@@ -17,21 +17,21 @@ def _add_source_arguments(parser: argparse.ArgumentParser, *, output_required: b
     parser.add_argument("--daily-report", required=True, type=Path, help="Суточный рапорт .xlsm")
     parser.add_argument("--well-history", required=True, type=Path, help="База по скважинам .xlsx")
     parser.add_argument(
-        "--output",
-        required=output_required,
+        "--research-status",
+        required=True,
         type=Path,
-        help="Файл результата .xlsx (для update обязателен)",
+        help="Статус исследований .xlsx",
+    )
+    parser.add_argument(
+        "--output",
+        required=False,
+        type=Path,
+        help="Файл результата .xlsx (по умолчанию имя включает выбранное месторождение)",
     )
     parser.add_argument("--log", type=Path, help="Путь текстового лога")
 
 
 def _source_paths(namespace: argparse.Namespace) -> SourcePaths:
-    if namespace.output:
-        output = namespace.output
-    elif namespace.command == "validate":
-        output = Path("reports") / "gdis_loader-validation.xlsx"
-    else:
-        output = default_output_path(namespace.calculator)
     return SourcePaths(
         calculator=namespace.calculator,
         fund=namespace.fund,
@@ -39,7 +39,8 @@ def _source_paths(namespace: argparse.Namespace) -> SourcePaths:
         lha=namespace.lha,
         daily_report=namespace.daily_report,
         well_history=namespace.well_history,
-        output=output,
+        research_status=namespace.research_status,
+        output=namespace.output,
     )
 
 
@@ -51,9 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser(
         "validate", help="проверить входные файлы и прочитать структуру"
     )
-    _add_source_arguments(validate_parser, output_required=False)
+    _add_source_arguments(validate_parser)
     update_parser = subparsers.add_parser("update", help="создать копию калькулятора с данными")
-    _add_source_arguments(update_parser, output_required=True)
+    _add_source_arguments(update_parser)
+    update_parser.add_argument(
+        "--field",
+        "--target-field",
+        dest="target_field",
+        required=True,
+        help="Canonical месторождение, найденное командой validate",
+    )
     return parser
 
 
@@ -64,7 +72,7 @@ def main(argv: list[str] | None = None) -> None:
         result = (
             run_validate(paths, args.log)
             if args.command == "validate"
-            else run_update(paths, args.log)
+            else run_update(paths, args.log, target_field=args.target_field)
         )
     except ServiceError as error:
         print(str(error))

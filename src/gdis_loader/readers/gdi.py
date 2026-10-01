@@ -16,6 +16,7 @@ from gdis_loader.readers.common import (
     coordinate,
     display_value,
     index_headers,
+    normalized_header,
     openpyxl_read_warnings,
     parse_datetime,
     parse_number,
@@ -45,6 +46,16 @@ def _find_header(ws: Any) -> tuple[int, tuple[object, ...]] | None:
         values = tuple(row)
         if len(index_headers(values, GDI_HEADER_ALIASES)) == len(GDI_HEADER_ALIASES):
             return row_number, values
+    return None
+
+
+def _find_productivity_a_column(headers: tuple[object, ...]) -> int | None:
+    """Find coefficient a by its source heading, including the documented AA form."""
+
+    for index, value in enumerate(headers):
+        header = normalized_header(value)
+        if header.startswith("a,") or header in {"коэф а", "коэффициент а"}:
+            return index
     return None
 
 
@@ -94,7 +105,8 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
             return (), tuple(issues)
         header_row, headers = header
         columns = index_headers(headers, GDI_HEADER_ALIASES)
-        last_column = max(columns.values()) + 1
+        productivity_a_column = _find_productivity_a_column(headers)
+        last_column = max((*columns.values(), productivity_a_column or 0)) + 1
         records: list[GdiRecord] = []
         for row_number, row in enumerate(
             worksheet.iter_rows(
@@ -221,6 +233,11 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     )
                 )
             depth_raw = row_value(values, columns, "depth")
+            productivity_a_raw = (
+                values[productivity_a_column]
+                if productivity_a_column is not None and productivity_a_column < len(values)
+                else None
+            )
             records.append(
                 GdiRecord(
                     raw_field_name=raw_field,
@@ -242,6 +259,7 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     field_cell=coordinate(row_number, columns["field"]),
                     well_cell=coordinate(row_number, columns["well"]),
                     plast_cell=coordinate(row_number, columns["plast"]),
+                    research_type_cell=coordinate(row_number, columns["research_type"]),
                     date_cell=coordinate(row_number, columns["study_date"]),
                     gtm_date_cell=coordinate(row_number, columns["gtm_date"]),
                     target_well_id=target_well_id,
@@ -251,6 +269,13 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     depth_cell=coordinate(row_number, columns["depth"]),
                     rfp_cell=coordinate(row_number, columns["rfp_result"]),
                     lnd_reliability_cell=coordinate(row_number, columns["lnd_reliability"]),
+                    productivity_a_raw=as_cell_value(productivity_a_raw),
+                    productivity_a_value=parse_number(productivity_a_raw),
+                    productivity_a_cell=(
+                        coordinate(row_number, productivity_a_column)
+                        if productivity_a_column is not None
+                        else None
+                    ),
                 )
             )
         return tuple(records), tuple(issues)

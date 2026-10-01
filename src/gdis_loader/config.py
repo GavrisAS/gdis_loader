@@ -29,6 +29,7 @@ class AppConfig:
     lha: str = ""
     daily_report: str = ""
     well_history: str = ""
+    research_status: str = ""
     output: str = ""
     last_directory: str = ""
 
@@ -77,6 +78,7 @@ def _config_from_mapping(data: dict[str, Any]) -> AppConfig:
         lha=_as_nonempty_string(files.get("lha", "")),
         daily_report=_as_nonempty_string(files.get("daily_report", "")),
         well_history=_as_nonempty_string(files.get("well_history", "")),
+        research_status=_as_nonempty_string(files.get("research_status", "")),
         output=_as_nonempty_string(files.get("output", "")),
         last_directory=_as_nonempty_string(ui.get("last_directory", "")),
     )
@@ -120,6 +122,7 @@ def _config_mapping(config: AppConfig) -> dict[str, dict[str, str]]:
             "lha": config.lha,
             "daily_report": config.daily_report,
             "well_history": config.well_history,
+            "research_status": config.research_status,
             "output": config.output,
         },
         "ui": {"last_directory": config.last_directory},

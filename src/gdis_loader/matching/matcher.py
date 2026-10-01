@@ -15,6 +15,7 @@ from gdis_loader.domain.models import (
     MatchResult,
     MatchStatus,
     WellHistory,
+    WellStage,
 )
 from gdis_loader.matching.lifecycle import resolve_lifecycle_stage
 from gdis_loader.matching.normalize import normalize_well_id
@@ -50,6 +51,21 @@ class GdiIndex:
         self._by_target_identity = {key: tuple(items) for key, items in grouped.items()}
         self._by_physical_root = {key: tuple(items) for key, items in by_root.items()}
 
+    def history_for(self, fund_well: FundWell) -> tuple[GdiRecord, ...]:
+        """Return all valid history rows for this root and field before cutoff."""
+
+        if fund_well.base_well_id is None:
+            return ()
+        cutoff_day = self._calculation_date or fund_well.fund_date
+        cutoff = datetime.combine(cutoff_day, time.max)
+        return tuple(
+            record
+            for record in self._by_physical_root.get(fund_well.base_well_id, ())
+            if record.normalized_field == fund_well.normalized_field
+            and record.study_date is not None
+            and record.study_date <= cutoff
+        )
+
     def candidates_for(
         self,
         fund_well: FundWell,
@@ -72,7 +88,28 @@ class GdiIndex:
             and record.study_date <= cutoff
         )
         if target_id != fund_well.base_well_id:
-            return exact
+            root_only = tuple(
+                record
+                for record in self._by_physical_root.get(fund_well.base_well_id or "", ())
+                if record.target_well_id == fund_well.base_well_id
+                and record.normalized_field == fund_well.normalized_field
+                and record.study_date is not None
+                and record.study_date <= cutoff
+            )
+            if fund_well.object_plast_hint is not None:
+                root_only = tuple(
+                    record
+                    for record in root_only
+                    if record.normalized_plast == fund_well.object_plast_hint
+                )
+            resolved = tuple(
+                record
+                for record in root_only
+                if (resolution := resolve_lifecycle_stage(fund_well, record, histories)).stage
+                is not None
+                and _stage_target_identity(resolution.stage) == target_id
+            )
+            return tuple(dict.fromkeys((*exact, *resolved)))
 
         lineage = tuple(
             record
@@ -144,6 +181,19 @@ def _latest_by_identity_and_plast(records: tuple[GdiRecord, ...]) -> tuple[GdiRe
         latest_date = max(record.study_date for record in grouped if record.study_date is not None)
         latest_records.extend(record for record in grouped if record.study_date == latest_date)
     return tuple(latest_records)
+
+
+def _stage_target_identity(stage: WellStage) -> str | None:
+    """Return an established identity or its event-based stage label."""
+
+    target_well_id = stage.target_well_id
+    if target_well_id:
+        return target_well_id
+    if stage.event_kind.value == "INITIAL":
+        return stage.physical_root
+    if stage.event_kind.value in {"ЗБС", "ПВЛГ"}:
+        return f"{stage.physical_root}_{stage.event_kind.value}"
+    return None
 
 
 def match_fund_well(

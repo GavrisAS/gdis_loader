@@ -47,7 +47,7 @@ def test_two_row_blu_reader_finds_dynamic_gtm_blocks_and_keeps_provenance(tmp_pa
     path = tmp_path / "База по скважинам.xlsx"
     _write_history(path)
 
-    result = read_well_history(path)
+    result = read_well_history(path, "Береговое")
 
     assert FIELD_SHEETS == {
         "БЛУ": "Береговое",

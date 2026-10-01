@@ -144,7 +144,7 @@ def _parse_cell_date(cell: Any) -> PartialDate | None:
 
 def read_well_history(
     path: Path,
-    target_field: str = "Береговое",
+    target_field: str,
 ) -> WellHistoryParseResult:
     """Read only the worksheet mapped to the currently selected target field."""
 
@@ -179,7 +179,7 @@ def read_well_history(
             issues.append(
                 DiagnosticIssue(
                     code="WELL_HISTORY_SHEET_MISSING",
-                    severity=IssueSeverity.ERROR,
+                    severity=IssueSeverity.WARNING,
                     message=f"В базе истории скважин отсутствует лист {sheet_name!r}.",
                     source="well_history",
                     locations=(sheet_location(source_file, sheet_name),),
@@ -193,7 +193,7 @@ def read_well_history(
             issues.append(
                 DiagnosticIssue(
                     code="WELL_HISTORY_SCHEMA_INVALID",
-                    severity=IssueSeverity.ERROR,
+                    severity=IssueSeverity.WARNING,
                     message="На листе истории не распознаны двухстрочные заголовки или блоки ГТМ.",
                     source="well_history",
                     locations=(sheet_location(source_file, sheet_name),),

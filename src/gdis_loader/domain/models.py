@@ -97,19 +97,10 @@ TARGET_FIELDS: tuple[str, ...] = (
 )
 
 INTENTIONALLY_BLANK_FIELDS: tuple[str, ...] = (
-    "Состояние",
-    "Количество ГДИ",
     "Расходомер",
-    "Недостаточно ГДИС",
-    "Снижение продуктивности",
-    "Рост хлора",
     "Проблемы ГДМ",
     "Последний АДД",
     "Не проведен АДД",
-    "Продолжительность без ГДИ",
-    "Удельное количество ГДИ",
-    "Продолжительность без ИД",
-    "Продолжительность без КВД",
     "Техническая возможность",
     "Дебит",
     "Manual μ",
@@ -329,6 +320,7 @@ class GdiRecord:
     field_cell: str | None = None
     well_cell: str | None = None
     plast_cell: str | None = None
+    research_type_cell: str | None = None
     date_cell: str | None = None
     gtm_date_cell: str | None = None
     target_well_id: str | None = None
@@ -338,6 +330,9 @@ class GdiRecord:
     depth_cell: str | None = None
     rfp_cell: str | None = None
     lnd_reliability_cell: str | None = None
+    productivity_a_raw: CellValue = None
+    productivity_a_value: float | None = None
+    productivity_a_cell: str | None = None
 
     @property
     def locations(self) -> tuple[SourceLocation, ...]:
@@ -423,6 +418,52 @@ class LhaValues:
     cl_previous: float | None = None
     vgf_current: float | None = None
     vgf_previous: float | None = None
+    cl_current_locations: tuple[SourceLocation, ...] = ()
+    cl_previous_locations: tuple[SourceLocation, ...] = ()
+    vgf_current_locations: tuple[SourceLocation, ...] = ()
+    vgf_previous_locations: tuple[SourceLocation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchStatusRecord:
+    """One dated research row from the new GDM status workbook."""
+
+    raw_well_name: str | None
+    base_well_id: str | None
+    target_well_id: str | None
+    raw_plast: str | None
+    normalized_plast: str | None
+    research_type: str | None
+    study_date: PartialDate | None
+    delta_raw: CellValue
+    delta_value: float | None
+    delta_formula_without_cache: bool
+    source_row: int
+    source_file: str
+    source_sheet: str
+    well_cell: str
+    plast_cell: str
+    research_type_cell: str
+    date_cell: str
+    delta_cell: str
+
+    @property
+    def is_adaptation_problem(self) -> bool | None:
+        """Return the per-row customer rule, preserving missing/invalid deltas."""
+
+        return None if self.delta_value is None else abs(self.delta_value) > 5
+
+    @property
+    def locations(self) -> tuple[SourceLocation, ...]:
+        return source_locations(
+            self.source_file,
+            self.source_sheet,
+            self.well_cell,
+            self.plast_cell,
+            self.research_type_cell,
+            self.date_cell,
+            self.delta_cell,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -554,12 +595,14 @@ class LoadReport:
     timestamp: str
     app_version: str
     python_version: str
-    input_paths: dict[str, str]
+    input_paths: dict[str, str | None]
     fund_date: date | None = None
     calculation_date: date | None = None
     fund_total: int = 0
     fund_total_source: int = 0
-    target_field: str = "Береговое"
+    target_field: str | None = None
+    available_fields: tuple[str, ...] = ()
+    field_coverage: dict[str, dict[str, int | bool | str | None]] = field(default_factory=dict)
     target_field_fund_total: int = 0
     rating_eligible: int = 0
     rating_not_eligible: int = 0
@@ -578,6 +621,29 @@ class LoadReport:
     well_history_date_precision_counts: dict[str, int] = field(default_factory=dict)
     gdi_kind_counts: dict[str, int] = field(default_factory=dict)
     gdi_kind_unknown: int = 0
+    gdi_count_filled: int = 0
+    insufficient_gdi_yes: int = 0
+    insufficient_gdi_no: int = 0
+    productivity_filled: int = 0
+    chlorine_growth_filled: int = 0
+    duration_without_gdi_filled: int = 0
+    duration_without_id_filled: int = 0
+    duration_without_kvd_filled: int = 0
+    specific_gdi_count_filled: int = 0
+    unsuffixed_gdi_assigned: int = 0
+    excluded_status_counts: dict[str, int] = field(default_factory=dict)
+    field_fill_counts: dict[str, int] = field(default_factory=dict)
+    gdm_rows_read: int = 0
+    gdm_numeric_delta_rows: int = 0
+    gdm_invalid_delta_rows: int = 0
+    gdm_missing_delta_rows: int = 0
+    gdm_formula_without_cached_delta_rows: int = 0
+    gdm_problem_candidate_rows: int = 0
+    gdm_target_candidate_rows: int = 0
+    gdm_unique_candidate_identities: int = 0
+    gdm_multiple_candidate_identities: int = 0
+    gdm_rows_per_target: dict[str, int] = field(default_factory=dict)
+    field_provenance: list[dict[str, Any]] = field(default_factory=list)
     lha_duplicate_resolved_max: int = 0
     launch_date_filled: int = 0
     launch_date_incomplete: int = 0
@@ -617,4 +683,5 @@ class SourcePaths:
     lha: Path
     daily_report: Path
     well_history: Path
-    output: Path
+    research_status: Path
+    output: Path | None = None

@@ -15,6 +15,7 @@ from gdis_loader.domain.models import (
     FundWell,
     GdiRecord,
     IssueSeverity,
+    PartialDate,
     SourceLocation,
     WellEventKind,
     WellHistory,
@@ -85,6 +86,109 @@ def _issue(
         well_id=fund_well.base_well_id,
         locations=unique,
     )
+
+
+def _assign_unsuffixed_record_by_timeline(
+    fund_well: FundWell,
+    record: GdiRecord,
+    history: WellHistory,
+) -> LifecycleResolution:
+    """Assign a root-only GDI label to one exact-plast stage by its date."""
+
+    if record.study_date is None:
+        return LifecycleResolution(None)
+    unresolved_events = tuple(
+        event
+        for event in history.events
+        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG} and event.event_date is None
+    )
+    if unresolved_events:
+        locations = [*fund_well.locations, *record.locations]
+        locations.extend(event.source_location for event in unresolved_events)
+        return LifecycleResolution(
+            None,
+            DiagnosticIssue(
+                code="WELL_HISTORY_STAGE_AMBIGUOUS",
+                severity=IssueSeverity.WARNING,
+                message="Дата подтвержденной lifecycle-границы не распознана.",
+                source="well_history",
+                well_id=fund_well.base_well_id,
+                locations=tuple(dict.fromkeys(locations)),
+            ),
+        )
+
+    overlapping = tuple(
+        stage
+        for stage in history.stages
+        if overlaps_same_precision_window(record.study_date, stage.started_at)
+    )
+    if overlapping:
+        return LifecycleResolution(
+            None,
+            _issue(
+                "WELL_HISTORY_STAGE_AMBIGUOUS",
+                "Дата root-only ГДИ пересекается по точности с датой начала этапа.",
+                fund_well,
+                record,
+                overlapping,
+            ),
+        )
+    preceding = tuple(
+        stage for stage in history.stages if definitely_after(record.study_date, stage.started_at)
+    )
+    if not preceding:
+        return LifecycleResolution(None)
+    latest = tuple(
+        stage
+        for stage in preceding
+        if not any(
+            other is not stage and definitely_after(other.started_at, stage.started_at)
+            for other in preceding
+        )
+    )
+    if len(latest) != 1:
+        return LifecycleResolution(
+            None,
+            _issue(
+                "WELL_HISTORY_STAGE_AMBIGUOUS",
+                "Для даты root-only ГДИ подходят несколько lifecycle-этапов.",
+                fund_well,
+                record,
+                latest or preceding,
+            ),
+        )
+    stage = latest[0]
+    if (
+        stage.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG}
+        and sum(candidate.event_kind is stage.event_kind for candidate in preceding) > 1
+    ):
+        return LifecycleResolution(
+            None,
+            _issue(
+                "WELL_HISTORY_STAGE_AMBIGUOUS",
+                "Для последовательных однотипных GTM root-only label не определяет этап.",
+                fund_well,
+                record,
+                tuple(
+                    candidate for candidate in preceding if candidate.event_kind is stage.event_kind
+                ),
+            ),
+        )
+    if record.normalized_plast is None or stage.plast != record.normalized_plast:
+        return LifecycleResolution(
+            None,
+            _issue(
+                "UNRESOLVED_PLAST_EQUIVALENCE",
+                (
+                    "Пласт root-only ГДИ не совпадает с пластом последнего этапа; "
+                    "эквивалентность не предполагается."
+                ),
+                fund_well,
+                record,
+                (stage,),
+            ),
+        )
+    return LifecycleResolution(stage)
 
 
 def resolve_lifecycle_stage(
@@ -168,6 +272,9 @@ def resolve_lifecycle_stage(
                 locations=tuple(dict.fromkeys(locations)),
             ),
         )
+
+    if variant is None and record is not None and record.study_date is not None:
+        return _assign_unsuffixed_record_by_timeline(fund_well, record, history)
 
     if record is None and variant is None:
         known_boundaries = tuple(
@@ -297,7 +404,7 @@ def assign_stage_by_date(
     physical_root: str,
     normalized_field: str,
     normalized_plast: str,
-    observed_at: datetime,
+    observed_at: datetime | PartialDate,
     histories: tuple[WellHistory, ...],
     observation_location: SourceLocation,
 ) -> LifecycleResolution:
@@ -327,7 +434,7 @@ def assign_stage_by_date(
         )
 
     history = candidates[0]
-    exact_observation = observed_at.date()
+    observation_date = observed_at.date() if isinstance(observed_at, datetime) else observed_at
     unresolved_boundaries = tuple(
         event
         for event in history.events
@@ -337,7 +444,7 @@ def assign_stage_by_date(
     overlaps = tuple(
         stage
         for stage in all_stages
-        if overlaps_same_precision_window(exact_observation, stage.started_at)
+        if overlaps_same_precision_window(observation_date, stage.started_at)
     )
     if overlaps:
         return LifecycleResolution(
@@ -349,7 +456,7 @@ def assign_stage_by_date(
             ),
         )
     preceding = tuple(
-        stage for stage in all_stages if definitely_after(exact_observation, stage.started_at)
+        stage for stage in all_stages if definitely_after(observation_date, stage.started_at)
     )
     if unresolved_boundaries:
         return LifecycleResolution(

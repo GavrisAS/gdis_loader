@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import sys
 from collections.abc import Callable
@@ -19,7 +18,9 @@ from PySide6.QtCore import (  # ty: ignore[unresolved-import, unused-ignore-comm
 )
 from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-comment]
     QApplication,
+    QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (  # ty: ignore[unresolved-import, unused-ignore-c
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -45,13 +47,12 @@ from gdis_loader.service import (
     ServiceError,
     ServiceResult,
     configure_logging,
-    default_output_path,
     run_update,
     run_validate,
 )
 
 LOGGER = logging.getLogger(__name__)
-_ServiceAction = Callable[..., ServiceResult]
+_ServiceAction = Callable[[SourcePaths, ProgressCallback], ServiceResult]
 
 _FILE_FIELDS: tuple[tuple[str, str, str, bool], ...] = (
     ("calculator", "Калькулятор", "Excel workbook (*.xlsx);;All files (*)", False),
@@ -60,6 +61,12 @@ _FILE_FIELDS: tuple[tuple[str, str, str, bool], ...] = (
     ("lha", "База ЛХА", "Excel macro workbook (*.xlsm);;All files (*)", False),
     ("daily_report", "Суточный рапорт", "Excel macro workbook (*.xlsm);;All files (*)", False),
     ("well_history", "База по скважинам", "Excel workbook (*.xlsx);;All files (*)", False),
+    (
+        "research_status",
+        "Статус исследований",
+        "Excel workbook (*.xlsx);;All files (*)",
+        False,
+    ),
     ("output", "Результат", "Excel workbook (*.xlsx);;All files (*)", True),
 )
 
@@ -79,20 +86,7 @@ class _ServiceWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            parameters = tuple(inspect.signature(self._action).parameters.values())
-            accepts_progress = (
-                any(
-                    parameter.kind
-                    in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-                    for parameter in parameters
-                )
-                or len(tuple(parameters)) >= 2
-            )
-            result = (
-                self._action(self._paths, self._report_progress)
-                if accepts_progress
-                else self._action(self._paths)
-            )
+            result = self._action(self._paths, self._report_progress)
         except ServiceError as error:
             self.failed.emit(str(error))
         except Exception:
@@ -116,12 +110,19 @@ class LoaderWindow(QMainWindow):
         self.setMinimumSize(820, 520)
         self._fields: dict[str, QLineEdit] = {}
         self._buttons: list[QPushButton] = []
+        self._browse_buttons: list[QPushButton] = []
         self._busy = False
         self._thread: QThread | None = None
         self._worker: _ServiceWorker | None = None
         self._operation: str | None = None
+        self._operation_kind: str | None = None
+        self._operation_field: str | None = None
         self._last_directory = ""
+        self._available_fields: tuple[str, ...] = ()
+        self._validation_fingerprint: tuple[str, ...] | None = None
+        self._active_fingerprint: tuple[str, ...] | None = None
         self._progress_bar: QProgressBar
+        self._field_combo: QComboBox
         self._thread_finished_signal.connect(self._thread_finished)
         self._build_ui()
 
@@ -152,28 +153,50 @@ class LoaderWindow(QMainWindow):
             field.setClearButtonEnabled(True)
             self._fields[key] = field
             grid.addWidget(field, row, 1)
+            if not is_output:
+                field.textChanged.connect(self._input_path_changed)
             button = QPushButton("Обзор…")
             button.clicked.connect(lambda _checked=False, name=key: self._browse(name))
             self._buttons.append(button)
+            self._browse_buttons.append(button)
             grid.addWidget(button, row, 2)
             if is_output:
                 field.setPlaceholderText("Путь файла результата .xlsx")
 
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        outer.addWidget(separator)
+
         actions = QHBoxLayout()
         self._validate_button = QPushButton("Проверить файлы")
         self._validate_button.clicked.connect(self._validate)
+        self._field_combo = QComboBox()
+        self._field_combo.setPlaceholderText("Месторождение…")
+        self._field_combo.setEnabled(False)
+        self._field_combo.currentTextChanged.connect(self._field_selected)
         self._update_button = QPushButton("Обновить калькулятор")
         self._update_button.clicked.connect(self._update)
+        self._update_button.setEnabled(False)
         self._buttons.extend((self._validate_button, self._update_button))
         actions.addWidget(self._validate_button)
+        actions.addWidget(self._field_combo, 1)
         actions.addWidget(self._update_button)
+        outer.addLayout(actions)
+
+        progress_separator = QFrame()
+        progress_separator.setFrameShape(QFrame.Shape.HLine)
+        progress_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        outer.addWidget(progress_separator)
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._progress_bar.setMinimumWidth(180)
+        self._progress_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         self._progress_bar.setTextVisible(True)
-        actions.addWidget(self._progress_bar, 1)
-        outer.addLayout(actions)
+        outer.addWidget(self._progress_bar)
 
         outer.addWidget(QLabel("Статус"))
         self._status_box = QPlainTextEdit()
@@ -216,8 +239,6 @@ class LoaderWindow(QMainWindow):
             return
         self._fields[name].setText(selected)
         self._last_directory = str(Path(selected).parent)
-        if name == "calculator" and not self._fields["output"].text().strip():
-            self._fields["output"].setText(str(default_output_path(Path(selected))))
         self._persist_config(show_error=True)
 
     def _config(self) -> AppConfig:
@@ -226,17 +247,59 @@ class LoaderWindow(QMainWindow):
 
     def _paths(self) -> SourcePaths:
         values = self._config()
-        calculator = Path(values.calculator)
-        output = Path(values.output) if values.output else default_output_path(calculator)
         return SourcePaths(
-            calculator=calculator,
+            calculator=Path(values.calculator),
             fund=Path(values.fund),
             gdi=Path(values.gdi),
             lha=Path(values.lha),
             daily_report=Path(values.daily_report),
             well_history=Path(values.well_history),
-            output=output,
+            research_status=Path(values.research_status),
+            output=Path(values.output) if values.output else None,
         )
+
+    def _source_fingerprint(self) -> tuple[str, ...]:
+        return tuple(
+            str(Path(self._fields[key].text().strip()).expanduser().resolve(strict=False))
+            if self._fields[key].text().strip()
+            else ""
+            for key, *_ in _FILE_FIELDS
+            if key != "output"
+        )
+
+    def _clear_available_fields(self) -> None:
+        self._available_fields = ()
+        self._field_combo.blockSignals(True)
+        self._field_combo.clear()
+        self._field_combo.setCurrentIndex(-1)
+        self._field_combo.blockSignals(False)
+        self._field_combo.setEnabled(False)
+        self._update_button.setEnabled(False)
+
+    def _invalidate_validation(self) -> None:
+        self._validation_fingerprint = None
+        self._clear_available_fields()
+
+    def _input_path_changed(self, _text: str) -> None:
+        if (
+            self._validation_fingerprint is not None
+            and self._source_fingerprint() != self._validation_fingerprint
+        ):
+            self._invalidate_validation()
+            self._set_status("Пути входных файлов изменились. Снова нажмите «Проверить файлы».")
+
+    def _field_selected(self, field_name: str) -> None:
+        valid = (
+            bool(field_name)
+            and self._validation_fingerprint is not None
+            and self._source_fingerprint() == self._validation_fingerprint
+            and field_name in self._available_fields
+        )
+        self._update_button.setEnabled(valid and not self._busy)
+        if valid:
+            self._set_status(
+                f"Обнаружено месторождений: {len(self._available_fields)}\nВыбрано: {field_name}"
+            )
 
     def _persist_config(self, *, show_error: bool) -> bool:
         try:
@@ -253,8 +316,25 @@ class LoaderWindow(QMainWindow):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        for button in self._buttons:
+        for button in self._browse_buttons:
             button.setEnabled(not busy)
+        for field in self._fields.values():
+            field.setEnabled(not busy)
+        self._validate_button.setEnabled(not busy)
+        if busy:
+            self._field_combo.setEnabled(False)
+            self._update_button.setEnabled(False)
+            return
+        validation_current = (
+            self._validation_fingerprint is not None
+            and self._source_fingerprint() == self._validation_fingerprint
+        )
+        self._field_combo.setEnabled(validation_current and bool(self._available_fields))
+        self._update_button.setEnabled(
+            validation_current
+            and bool(self._field_combo.currentText())
+            and self._field_combo.currentText() in self._available_fields
+        )
 
     def _set_status(self, message: str) -> None:
         self._status_box.setPlainText(message)
@@ -267,32 +347,46 @@ class LoaderWindow(QMainWindow):
         self._progress_bar.setValue(percent)
         self._set_status(f"{self._operation or 'Операция'}: {stage}")
 
-    def _start(self, action: _ServiceAction, operation: str) -> None:
+    def _start(
+        self,
+        action: _ServiceAction,
+        operation: str,
+        *,
+        operation_kind: str,
+        target_field: str | None = None,
+    ) -> None:
         if self._busy:
             return
         self._operation = operation
+        self._operation_kind = operation_kind
+        self._operation_field = target_field
         self._reset_progress()
         if not self._persist_config(show_error=True):
             self._operation = None
+            self._operation_kind = None
+            self._operation_field = None
             return
         try:
             paths = self._paths()
-            configure_logging(paths.output.parent / "gdis_loader.log")
+            log_directory = (
+                paths.output.parent if paths.output is not None else paths.calculator.parent
+            )
+            configure_logging(log_directory / "gdis_loader.log")
         except (OSError, ValueError) as error:
             self._operation = None
+            self._operation_kind = None
+            self._operation_field = None
             QMessageBox.critical(self, operation, f"Не удалось подготовить запуск: {error}")
             return
 
         self._set_busy(True)
-        self._set_status(f"{operation}: чтение Excel выполняется в фоне…")
+        self._set_status(
+            f"{operation}: {target_field}\nЧтение Excel выполняется в фоне…"
+            if target_field
+            else f"{operation}: чтение Excel выполняется в фоне…"
+        )
         thread = QThread(self)
-
-        def action_with_progress(
-            worker_paths: SourcePaths, progress: ProgressCallback
-        ) -> ServiceResult:
-            return action(worker_paths, progress=progress)
-
-        worker = _ServiceWorker(action_with_progress, paths)
+        worker = _ServiceWorker(action, paths)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress_changed.connect(self._progress_changed)
@@ -314,7 +408,25 @@ class LoaderWindow(QMainWindow):
     def _finish_success(self, result: ServiceResult) -> None:
         if not result.has_errors:
             self._progress_bar.setValue(100)
+        if self._operation_kind == "validate":
+            if result.has_errors:
+                self._invalidate_validation()
+            else:
+                self._available_fields = result.report.available_fields
+                self._validation_fingerprint = self._active_fingerprint
+                self._field_combo.blockSignals(True)
+                self._field_combo.clear()
+                self._field_combo.addItems(list(self._available_fields))
+                self._field_combo.setCurrentIndex(-1)
+                self._field_combo.blockSignals(False)
+                self._field_combo.setEnabled(bool(self._available_fields))
+                self._update_button.setEnabled(False)
         self._set_status(result.summary())
+        if self._operation_kind == "validate" and not result.has_errors:
+            if self._available_fields:
+                self._status_box.appendPlainText("Выберите одно месторождение для обновления.")
+            else:
+                self._status_box.appendPlainText("В текущем фонде месторождения не обнаружены.")
         if result.has_errors:
             QMessageBox.critical(self, self._operation or "Ошибка", result.summary())
         elif self._operation == "Обновление данных" and result.has_capacity_warning:
@@ -327,6 +439,8 @@ class LoaderWindow(QMainWindow):
 
     @Slot(str)
     def _finish_error(self, message: str) -> None:
+        if self._operation_kind == "validate":
+            self._invalidate_validation()
         self._set_status(message)
         QMessageBox.critical(self, self._operation or "Ошибка", message)
 
@@ -339,13 +453,44 @@ class LoaderWindow(QMainWindow):
         self._thread = None
         self._worker = None
         self._operation = None
+        self._operation_kind = None
+        self._operation_field = None
+        self._active_fingerprint = None
         self._set_busy(False)
 
     def _validate(self) -> None:
-        self._start(run_validate, "Проверка файлов")
+        self._invalidate_validation()
+        self._active_fingerprint = self._source_fingerprint()
+
+        def validate_action(paths: SourcePaths, progress: ProgressCallback) -> ServiceResult:
+            return run_validate(paths, progress=progress)
+
+        self._start(
+            validate_action,
+            "Проверка файлов",
+            operation_kind="validate",
+        )
 
     def _update(self) -> None:
-        self._start(run_update, "Обновление данных")
+        field_name = self._field_combo.currentText()
+        if (
+            not field_name
+            or self._validation_fingerprint is None
+            or self._source_fingerprint() != self._validation_fingerprint
+        ):
+            self._update_button.setEnabled(False)
+            self._set_status("Сначала проверьте файлы и выберите месторождение.")
+            return
+
+        def update_action(paths: SourcePaths, progress: ProgressCallback) -> ServiceResult:
+            return run_update(paths, progress=progress, target_field=field_name)
+
+        self._start(
+            update_action,
+            "Обновление данных",
+            operation_kind="update",
+            target_field=field_name,
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._busy:

@@ -159,24 +159,37 @@ class LhaIndex:
                 if assignment.stage == lifecycle_stage:
                     eligible.append(record)
 
-        cl_current, cl_previous, cl_issues = _select_metric(
-            eligible,
-            metric="cl_value",
-            metric_label="Cl",
-            base_well_id=base_well_id,
-            normalized_field=normalized_field,
-            normalized_plast=normalized_plast,
+        cl_current, cl_previous, cl_current_locations, cl_previous_locations, cl_issues = (
+            _select_metric(
+                eligible,
+                metric="cl_value",
+                metric_label="Cl",
+                base_well_id=base_well_id,
+                normalized_field=normalized_field,
+                normalized_plast=normalized_plast,
+            )
         )
-        vgf_current, vgf_previous, vgf_issues = _select_metric(
-            eligible,
-            metric="vgf_value",
-            metric_label="ВГФ",
-            base_well_id=base_well_id,
-            normalized_field=normalized_field,
-            normalized_plast=normalized_plast,
+        vgf_current, vgf_previous, vgf_current_locations, vgf_previous_locations, vgf_issues = (
+            _select_metric(
+                eligible,
+                metric="vgf_value",
+                metric_label="ВГФ",
+                base_well_id=base_well_id,
+                normalized_field=normalized_field,
+                normalized_plast=normalized_plast,
+            )
         )
         return LhaSelection(
-            values=LhaValues(cl_current, cl_previous, vgf_current, vgf_previous),
+            values=LhaValues(
+                cl_current,
+                cl_previous,
+                vgf_current,
+                vgf_previous,
+                cl_current_locations,
+                cl_previous_locations,
+                vgf_current_locations,
+                vgf_previous_locations,
+            ),
             issues=(*lifecycle_issues, *cl_issues, *vgf_issues),
         )
 
@@ -198,7 +211,13 @@ def _select_metric(
     base_well_id: str,
     normalized_field: str,
     normalized_plast: str,
-) -> tuple[float | None, float | None, tuple[DiagnosticIssue, ...]]:
+) -> tuple[
+    float | None,
+    float | None,
+    tuple[SourceLocation, ...],
+    tuple[SourceLocation, ...],
+    tuple[DiagnosticIssue, ...],
+]:
     records_by_timestamp: defaultdict[datetime, list[LhaRecord]] = defaultdict(list)
     values_by_timestamp: defaultdict[datetime, list[tuple[float, LhaRecord]]] = defaultdict(list)
     for record in records:
@@ -241,13 +260,15 @@ def _select_metric(
             )
     points = tuple(points_list)
     if not points:
-        return None, None, ()
+        return None, None, (), (), ()
     current = points[0].value
+    current_locations = points[0].selected_record.metric_locations(metric)
     previous = None
     if len(points) <= 1:
-        return current, previous, tuple(duplicate_issues)
+        return current, previous, current_locations, (), tuple(duplicate_issues)
     previous = points[1].value
-    return current, previous, tuple(duplicate_issues)
+    previous_locations = points[1].selected_record.metric_locations(metric)
+    return current, previous, current_locations, previous_locations, tuple(duplicate_issues)
 
 
 def _record_location_key(record: LhaRecord) -> tuple[str, str, int, str]:

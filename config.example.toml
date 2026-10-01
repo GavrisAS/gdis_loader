@@ -5,6 +5,7 @@ gdi = ""
 lha = ""
 daily_report = ""
 well_history = ""
+research_status = ""
 output = ""
 
 [ui]

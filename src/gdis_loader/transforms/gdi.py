@@ -8,7 +8,6 @@ import unicodedata
 from gdis_loader.domain.models import GdiKind
 
 _ID_TOKEN = re.compile(r"(?<![0-9А-ЯA-Z])ИД(?![0-9А-ЯA-Z])")
-_KVD_TOKEN = re.compile(r"(?<![0-9А-ЯA-Z])КВД(?![0-9А-ЯA-Z])")
 _PRESSURE_ONLY = re.compile(r"(?<![0-9А-ЯA-Z])(?:P|Р)\s*(?:СТ(?:АТИК[А-Я]*)?|ПЛ)(?![0-9А-ЯA-Z])")
 
 
@@ -27,7 +26,9 @@ def classify_gdi_kind(raw_value: object) -> GdiKind:
     text = text.replace("Ё", "Е")
     text = re.sub(r"\s+", " ", text)
     has_id = _ID_TOKEN.search(text) is not None
-    has_kvd = _KVD_TOKEN.search(text) is not None
+    # KВД is a stable marker inside source labels such as ``КВДгл`` and
+    # ``миниКВД``. The full marker avoids false positives such as ``КВУ``.
+    has_kvd = "КВД" in text
     if has_id and has_kvd:
         return GdiKind.ID_KVD
     if has_id:
