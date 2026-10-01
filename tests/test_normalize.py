@@ -6,28 +6,52 @@ from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
+    ("value", "expected_root", "expected_target"),
     [
-        ("011", "11"),
-        (11, "11"),
-        (11.0, "11"),
-        ("11_ЗБС", "11"),
-        ("011_ЗБС 3", "11"),
-        ("10501_збс(ГС1+ГС2)", "10501"),
-        ("10304_МЗС", "10304"),
-        ("54 ГС", "54"),
+        ("011", "11", "11"),
+        (11, "11", "11"),
+        (11.0, "11", "11"),
+        ("11_ЗБС", "11", "11_ЗБС"),
+        ("011_ЗБС 3", "11", "11_ЗБС 3"),
+        ("10501_збс(ГС1+ГС2)", "10501", "10501_ЗБС(ГС1+ГС2)"),
+        ("10304_МЗС", "10304", "10304_МЗС"),
+        ("54 ГС", "54", "54_ГС"),
     ],
 )
-def test_well_id_real_variants(value: object, expected: str) -> None:
-    assert normalize_well_id(value).base_well_id == expected
+def test_well_id_keeps_root_and_lifecycle_identity(
+    value: object, expected_root: str, expected_target: str
+) -> None:
+    normalized = normalize_well_id(value)
+    assert normalized.base_well_id == expected_root
+    assert normalized.target_well_id == expected_target
 
 
 def test_unknown_underscore_suffix_is_not_deleted() -> None:
-    assert normalize_well_id("11_OTHER").base_well_id == "11_OTHER"
+    normalized = normalize_well_id("011_OTHER")
+    assert normalized.base_well_id == "11"
+    assert normalized.target_well_id == "11_OTHER"
 
 
 def test_non_numeric_source_identifier_is_preserved() -> None:
-    assert normalize_well_id("Р-183").base_well_id == "Р-183"
+    normalized = normalize_well_id("Р-183")
+    assert normalized.base_well_id == normalized.target_well_id == "Р-183"
+
+
+def test_mzs_zbs_and_pvlg_are_distinct_target_identities_with_shared_root() -> None:
+    for root, variant in (("10403", "МЗС"), ("51", "ЗБС"), ("54", "ПВЛГ")):
+        parent = normalize_well_id(root)
+        child = normalize_well_id(f"0{root}_{variant}")
+        assert parent.target_well_id != child.target_well_id
+        assert child.base_well_id == parent.base_well_id
+        assert child.target_well_id == f"{root}_{variant}"
+
+
+def test_sequential_zbs_suffix_is_preserved_without_assuming_event_number() -> None:
+    normalized = normalize_well_id("051_ЗБС2")
+
+    assert normalized.base_well_id == "51"
+    assert normalized.target_well_id == "51_ЗБС2"
+    assert normalized.recognized_variant is None
 
 
 @pytest.mark.parametrize("value", ["ПК₁", "ПК-1", "ПК 1"])

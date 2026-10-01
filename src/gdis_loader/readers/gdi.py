@@ -7,9 +7,10 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from gdis_loader.domain.models import DiagnosticIssue, GdiRecord, IssueSeverity
+from gdis_loader.domain.models import DiagnosticIssue, GdiKind, GdiRecord, IssueSeverity
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.common import (
+    as_cell_value,
     as_text,
     cell_location,
     coordinate,
@@ -17,10 +18,12 @@ from gdis_loader.readers.common import (
     index_headers,
     openpyxl_read_warnings,
     parse_datetime,
+    parse_number,
     row_is_empty,
     row_value,
     sheet_location,
 )
+from gdis_loader.transforms.gdi import classify_gdi_kind
 
 GDI_SHEET = "ГДИС_Сибнефтегаз в целом"
 GDI_HEADER_ALIASES: dict[str, set[str]] = {
@@ -29,6 +32,7 @@ GDI_HEADER_ALIASES: dict[str, set[str]] = {
     "plast": {"Пласт"},
     "research_type": {"Вид исследования"},
     "study_date": {"Дата"},
+    "depth": {"Глубина записи, м"},
     "rfp_result": {"Выход на РФП (да/нет)"},
     "lnd_reliability": {"Достоверность согласно ЛНД"},
     "gtm_date": {"Дата проведения ГТМ"},
@@ -116,7 +120,9 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
             raw_field = as_text(raw_field_value)
             raw_well = display_value(raw_well_value) if raw_well_value is not None else None
             raw_plast = as_text(raw_plast_value)
-            base_id = normalize_well_id(raw_well).base_well_id if raw_well is not None else None
+            normalized_well = normalize_well_id(raw_well) if raw_well is not None else None
+            base_id = normalized_well.base_well_id if normalized_well is not None else None
+            target_well_id = normalized_well.target_well_id if normalized_well is not None else None
             study_date = parse_datetime(raw_date_value)
             if raw_date_value is not None and study_date is None:
                 issues.append(
@@ -191,6 +197,30 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                         ),
                     )
                 )
+            raw_research_type = as_text(row_value(values, columns, "research_type"))
+            gdi_kind = classify_gdi_kind(raw_research_type)
+            if gdi_kind is GdiKind.UNKNOWN:
+                issues.append(
+                    DiagnosticIssue(
+                        code="GDI_KIND_UNKNOWN",
+                        severity=IssueSeverity.INFO,
+                        message=(
+                            f"Неизвестная подпись вида исследования {raw_research_type!r}; "
+                            "запись не учитывается как ГДИ."
+                        ),
+                        source="gdi",
+                        well_id=base_id,
+                        locations=(
+                            cell_location(
+                                source_file,
+                                GDI_SHEET,
+                                row_number,
+                                columns["research_type"],
+                            ),
+                        ),
+                    )
+                )
+            depth_raw = row_value(values, columns, "depth")
             records.append(
                 GdiRecord(
                     raw_field_name=raw_field,
@@ -201,7 +231,7 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     base_well_id=base_id,
                     raw_plast=raw_plast,
                     normalized_plast=normalize_plast(raw_plast),
-                    research_type=as_text(row_value(values, columns, "research_type")),
+                    research_type=raw_research_type,
                     study_date=study_date,
                     rfp_result=as_text(row_value(values, columns, "rfp_result")),
                     lnd_reliability=as_text(row_value(values, columns, "lnd_reliability")),
@@ -214,6 +244,13 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     plast_cell=coordinate(row_number, columns["plast"]),
                     date_cell=coordinate(row_number, columns["study_date"]),
                     gtm_date_cell=coordinate(row_number, columns["gtm_date"]),
+                    target_well_id=target_well_id,
+                    gdi_kind=gdi_kind,
+                    depth_raw_value=as_cell_value(depth_raw),
+                    depth_value=parse_number(depth_raw),
+                    depth_cell=coordinate(row_number, columns["depth"]),
+                    rfp_cell=coordinate(row_number, columns["rfp_result"]),
+                    lnd_reliability_cell=coordinate(row_number, columns["lnd_reliability"]),
                 )
             )
         return tuple(records), tuple(issues)

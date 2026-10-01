@@ -37,7 +37,7 @@ _COUNT_RE = re.compile(r"^\d+(?:\.0+)?$")
 _NUMERIC_TOKEN_RE = re.compile(r"^\d+$")
 
 _CATEGORIES: tuple[tuple[int, FundCategory], ...] = (
-    (3, FundCategory.PRODUCING),
+    (3, FundCategory.PRODUCING_GAS),
     (4, FundCategory.STOPPED_IN_REPORTING_MONTH),
     (7, FundCategory.INACTIVE_CURRENT_YEAR),
     (8, FundCategory.INACTIVE_PREVIOUS_YEARS),
@@ -321,6 +321,7 @@ def read_fund(path: Path) -> FundParseResult:
                             base_well_id=normalized.base_well_id,
                             field_name=current_field,
                             normalized_field=normalize_field_name(current_field),
+                            target_well_id=normalized.target_well_id,
                             object_name=object_name,
                             source_category=category,
                             fund_date=fund_date,
@@ -354,8 +355,8 @@ def read_fund(path: Path) -> FundParseResult:
                         )
         duplicate_wells: dict[tuple[str | None, str], list[FundWell]] = {}
         for well in wells:
-            if well.base_well_id is not None:
-                duplicate_wells.setdefault((well.base_well_id, well.normalized_field), []).append(
+            if well.target_well_id is not None:
+                duplicate_wells.setdefault((well.target_well_id, well.normalized_field), []).append(
                     well
                 )
         for (well_id, field_name), occurrences in duplicate_wells.items():
@@ -366,7 +367,8 @@ def read_fund(path: Path) -> FundParseResult:
                         code="FUND_DUPLICATE_WELL",
                         severity=IssueSeverity.WARNING,
                         message=(
-                            f"В выбранном фонде номер {well_id} повторяется {count} раз "
+                            f"В выбранном фонде целевая идентичность {well_id} повторяется "
+                            f"{count} раз "
                             f"в поле {field_name!r}."
                         ),
                         source="fund",

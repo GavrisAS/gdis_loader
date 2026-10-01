@@ -4,6 +4,7 @@ fund = ""
 gdi = ""
 lha = ""
 daily_report = ""
+well_history = ""
 output = ""
 
 [ui]

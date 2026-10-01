@@ -15,6 +15,7 @@ def _add_source_arguments(parser: argparse.ArgumentParser, *, output_required: b
     parser.add_argument("--gdi", required=True, type=Path, help="Сводная таблица ГДИ .xlsx")
     parser.add_argument("--lha", required=True, type=Path, help="База ЛХА .xlsm")
     parser.add_argument("--daily-report", required=True, type=Path, help="Суточный рапорт .xlsm")
+    parser.add_argument("--well-history", required=True, type=Path, help="База по скважинам .xlsx")
     parser.add_argument(
         "--output",
         required=output_required,
@@ -37,6 +38,7 @@ def _source_paths(namespace: argparse.Namespace) -> SourcePaths:
         gdi=namespace.gdi,
         lha=namespace.lha,
         daily_report=namespace.daily_report,
+        well_history=namespace.well_history,
         output=output,
     )
 

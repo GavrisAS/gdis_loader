@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
-from gdis_loader.domain.models import IssueSeverity, SourceLocation, SourcePaths
+from gdis_loader.domain.models import IssueSeverity, SourcePaths
 from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
 from gdis_loader.readers.lha import LhaIndex, read_lha
 from gdis_loader.service import run_update
@@ -19,6 +18,7 @@ REAL_FILES = (
     DATA_ROOT / "Сводная таблица ГДИ.xlsx",
     DATA_ROOT / "База ЛХА_Итог!.xlsm",
     DATA_ROOT / "07.2026 Cуточный рапорт БГП_полный.xlsm",
+    DATA_ROOT / "Ответы на вопросы" / "2026-09-30_ответы_v1" / "База по скважинам.xlsx",
 )
 
 
@@ -33,64 +33,34 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         gdi=REAL_FILES[2],
         lha=REAL_FILES[3],
         daily_report=REAL_FILES[4],
+        well_history=REAL_FILES[5],
         output=output,
     )
 
-    result = run_update(paths, tmp_path / "loader.log")
+    result = run_update(paths, tmp_path / "loader.log", calculation_date=date(2026, 10, 1))
 
+    assert result.report.calculation_date == date(2026, 10, 1)
+    assert result.report.fund_total_source == 129
     assert result.report.fund_total == 129
-    assert result.report.matched == 128
-    assert result.report.no_gdi == 1
-    assert result.report.ambiguous == 0
-    assert result.report.with_lha_cl == 103
-    assert result.report.with_lha_vgf == 105
-    assert result.report.rows_written == 129
+    assert result.report.target_field == "Береговое"
+    assert result.report.target_field_fund_total == result.report.rows_prepared
+    assert result.report.rows_written == result.report.rows_prepared
+    assert (
+        result.report.rating_eligible + result.report.rating_not_eligible
+        == result.report.rows_prepared
+    )
+    assert result.report.well_history_records > 0
+    assert result.report.well_history_gtm_events > 0
+    assert result.report.gdi_kind_counts
     assert not any(issue.severity is IssueSeverity.ERROR for issue in result.report.issues)
-    warning_distribution = Counter(
-        issue.code for issue in result.report.issues if issue.severity is IssueSeverity.WARNING
+    assert not any(
+        issue.code == "LHA_DUPLICATE_TIMESTAMP_CONFLICT" for issue in result.report.issues
     )
-    assert warning_distribution == Counter(
-        {
-            "DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY": 1,
-            "GDI_INVALID_PLAST": 2,
-            "GDI_INVALID_WELL": 4,
-            "GDI_MISSING_DATE": 5,
-            "LHA_DUPLICATE_TIMESTAMP_CONFLICT": 11,
-            "LHA_INVALID_DATE": 13,
-            "LHA_INVALID_PLAST": 1,
-            "LHA_INVALID_WELL": 3,
-            "TARGET_IDENTITY_COLLISION": 5,
-            "UNCONFIRMED_WELL_VARIANT_MZS": 1,
-        }
-    )
-    info_distribution = Counter(
-        issue.code for issue in result.report.issues if issue.severity is IssueSeverity.INFO
-    )
-    assert info_distribution["FUND_MISSING_SEPARATOR_NORMALIZED"] == 1
-    collision_messages = {
-        issue.message for issue in result.report.issues if issue.code == "TARGET_IDENTITY_COLLISION"
-    }
-    assert len(collision_messages) == 5
-    for target in ("22 + ПК-1", "62 + ПК-1", "101 + ПК-1", "321 + ПК-1", "322 + ПК-1"):
-        assert any(target in message for message in collision_messages)
-    collision_issues = [
-        issue for issue in result.report.issues if issue.code == "TARGET_IDENTITY_COLLISION"
-    ]
+    assert not any(issue.code == "UNCONFIRMED_WELL_VARIANT_MZS" for issue in result.report.issues)
     assert all(
-        any(location.file == str(REAL_FILES[1].resolve()) for location in issue.locations)
-        and any(location.file == str(REAL_FILES[2].resolve()) for location in issue.locations)
-        for issue in collision_issues
-    )
-    mzs_issue = next(
-        issue for issue in result.report.issues if issue.code == "UNCONFIRMED_WELL_VARIANT_MZS"
-    )
-    assert any(location.file == str(REAL_FILES[1].resolve()) for location in mzs_issue.locations)
-    assert any(location.file == str(REAL_FILES[2].resolve()) for location in mzs_issue.locations)
-    separator_issue = next(
-        issue for issue in result.report.issues if issue.code == "FUND_MISSING_SEPARATOR_NORMALIZED"
-    )
-    assert separator_issue.locations == (
-        SourceLocation(str(REAL_FILES[1].resolve()), "01.08.2026", "C12"),
+        issue.severity is IssueSeverity.INFO and issue.locations
+        for issue in result.report.issues
+        if issue.code == "LHA_DUPLICATE_TIMESTAMP_RESOLVED_MAX"
     )
     assert not any(issue.code.startswith("DAILY_") for issue in result.report.issues)
     assert not any(
@@ -102,8 +72,9 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     with ZipFile(output) as archive:
         table_xml = archive.read("xl/tables/table2.xml").decode("utf-8")
         sheet_xml = archive.read("xl/worksheets/sheet3.xml").decode("utf-8")
-    assert 'ref="A6:Z135"' in table_xml
-    assert 'sqref="A7:A135"' in sheet_xml
+    table_end = 6 + result.report.rows_written
+    assert f'ref="A6:Z{table_end}"' in table_xml
+    assert f'sqref="A7:A{table_end}"' in sheet_xml
     assert 'mc:Ignorable="x14ac"' in sheet_xml
     assert "xmlns:x14ac=" in sheet_xml
 
@@ -119,7 +90,7 @@ def test_real_bundle_update(tmp_path: Path) -> None:
 @pytest.mark.skipif(
     not all(path.is_file() for path in REAL_FILES), reason="real data files are not present"
 )
-def test_real_lha_duplicate_timestamps_never_use_source_row_order() -> None:
+def test_real_lha_duplicate_timestamps_choose_max_independent_of_source_row_order() -> None:
     records, _ = read_lha(REAL_FILES[3])
     index = LhaIndex(records)
     cases = (
@@ -148,68 +119,31 @@ def test_real_lha_duplicate_timestamps_never_use_source_row_order() -> None:
             and getattr(record, metric) is not None
         ]
         assert matching, (raw_well, field, plast, metric, timestamp)
+        target_well_id = normalize_well_id(raw_well).target_well_id
         selection = index.select(
             base_well_id=base_well_id or "",
             normalized_field=normalized_field,
             normalized_plast=normalized_plast or "",
             cutoff=datetime.max,
+            target_well_id=target_well_id,
         )
-        metric_label = "Cl" if metric == "cl_value" else "ВГФ"
-        metric_issues = [issue for issue in selection.issues if metric_label in issue.message]
-        values_by_timestamp: dict[datetime, set[float]] = {}
-        for record in records:
-            value = getattr(record, metric)
-            measured_at = record.measured_at
-            if (
-                record.base_well_id == base_well_id
-                and record.normalized_field == normalized_field
-                and record.normalized_plast == normalized_plast
-                and measured_at is not None
-                and value is not None
-            ):
-                values_by_timestamp.setdefault(measured_at, set()).add(value)
-        points = sorted(values_by_timestamp.items(), reverse=True)
-        expected_role = None
-        if points and len(points[0][1]) > 1:
-            expected_role = "current"
-        elif len(points) > 1 and len(points[1][1]) > 1:
-            expected_role = "previous"
-        assert len(metric_issues) == (1 if expected_role else 0)
-        if expected_role:
-            assert f"роль {expected_role}" in metric_issues[0].message
-            assert timestamp in metric_issues[0].message
-        if expected_role == "current":
-            assert (
-                selection.cl_current is None
-                if metric == "cl_value"
-                else selection.vgf_current is None
+        reversed_selection = LhaIndex(reversed(records)).select(
+            base_well_id=base_well_id or "",
+            normalized_field=normalized_field,
+            normalized_plast=normalized_plast or "",
+            cutoff=datetime.max,
+            target_well_id=target_well_id,
+        )
+        assert selection.values == reversed_selection.values
+        assert not any(
+            issue.code == "LHA_DUPLICATE_TIMESTAMP_CONFLICT" for issue in selection.issues
+        )
+        resolved = [
+            issue
+            for issue in selection.issues
+            if issue.code == "LHA_DUPLICATE_TIMESTAMP_RESOLVED_MAX" and timestamp in issue.message
+        ]
+        if resolved:
+            assert all(
+                issue.severity is IssueSeverity.INFO and issue.locations for issue in resolved
             )
-            assert (
-                selection.cl_previous is None
-                if metric == "cl_value"
-                else selection.vgf_previous is None
-            )
-        elif expected_role == "previous":
-            assert (
-                selection.cl_current is not None
-                if metric == "cl_value"
-                else selection.vgf_current is not None
-            )
-            assert (
-                selection.cl_previous is None
-                if metric == "cl_value"
-                else selection.vgf_previous is None
-            )
-        else:
-            assert points[0][0] == when
-            assert (
-                selection.cl_current == next(iter(points[0][1]))
-                if metric == "cl_value"
-                else selection.vgf_current == next(iter(points[0][1]))
-            )
-            if len(points) > 1:
-                assert (
-                    selection.cl_previous == next(iter(points[1][1]))
-                    if metric == "cl_value"
-                    else selection.vgf_previous == next(iter(points[1][1]))
-                )

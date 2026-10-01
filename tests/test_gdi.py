@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -15,6 +16,7 @@ GDI_HEADERS = [
     "Выход на РФП (да/нет)",
     "Достоверность согласно ЛНД",
     "Дата проведения ГТМ",
+    "Глубина записи, м",
 ]
 
 
@@ -48,3 +50,24 @@ def test_gdi_partially_filled_identity_row_keeps_diagnostics(tmp_path: Path) -> 
 
     assert len(records) == 1
     assert {"GDI_INVALID_PLAST", "GDI_MISSING_DATE"} <= codes
+
+
+def test_gdi_preserves_raw_type_classifies_unknown_and_keeps_depth_zero(tmp_path: Path) -> None:
+    path = tmp_path / "gdi.xlsx"
+    _write_gdi(
+        path,
+        [
+            ["Береговое", 11, "ПК1", "КВУ", datetime(2026, 1, 1), "да", "Высокая", None, 0],
+            ["Береговое", 12, "ПК1", "ИД", datetime(2026, 1, 2), "нет", None, None, "ошибка"],
+        ],
+    )
+
+    records, issues = read_gdi(path)
+
+    assert records[0].research_type == "КВУ"
+    assert records[0].is_downhole_measurement is False
+    assert records[0].depth_raw_value == 0
+    assert records[1].research_type == "ИД"
+    assert records[1].is_downhole_measurement is None
+    unknown = next(issue for issue in issues if issue.code == "GDI_KIND_UNKNOWN")
+    assert unknown.locations[0].cell == "D2"

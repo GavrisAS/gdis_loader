@@ -8,8 +8,10 @@ from dataclasses import dataclass
 
 _SPACE_RE = re.compile(r"\s+")
 _NUMERIC_RE = re.compile(r"^(?P<digits>\d+)(?:\.0+)?$")
-_VARIANT_RE = re.compile(
-    r"^(?P<number>\d+)\s*(?:_\s*|\s+)(?P<marker>ЗБС|ПВЛГ|КЛК|МЗС)(?=$|[\s_\d(]).*$",
+_KNOWN_VARIANT_RE = re.compile(r"^(ЗБС|ПВЛГ|КЛК|МЗС|ГС)(?:$|[ _(\-](?!\d).*)$", re.IGNORECASE)
+_UNDERSCORE_SUFFIX_RE = re.compile(r"^(?P<number>\d+)\s*_\s*(?P<suffix>.+)$")
+_SPACE_VARIANT_RE = re.compile(
+    r"^(?P<number>\d+)\s+(?P<suffix>(?:ЗБС|ПВЛГ|КЛК|МЗС|ГС)(?=$|[\s_\d(]).*)$",
     re.IGNORECASE,
 )
 _GAS_BRANCH_RE = re.compile(r"^(?P<number>\d+)\s+ГС(?:$|[\s_(\d]).*$", re.IGNORECASE)
@@ -23,10 +25,11 @@ _SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 
 @dataclass(frozen=True, slots=True)
 class NormalizedWell:
-    """Normalized identity plus whether an explicit variant rule was applied."""
+    """Physical root and distinct normalized target/lifecycle identity."""
 
     raw: str
     base_well_id: str | None
+    target_well_id: str | None = None
     recognized_variant: str | None = None
 
 
@@ -43,45 +46,50 @@ def _numeric_text(text: str) -> str | None:
 
 
 def normalize_well_id(value: object) -> NormalizedWell:
-    """Return a conservative physical-well id.
+    """Normalize leading zeroes while keeping target identities distinct.
 
-    Leading zeroes are removed only for purely numeric values.  Suffixes are
-    removed only for explicit markers confirmed by the current sources
-    (ЗБС, ПВЛГ, КЛК, and ГС).  ``МЗС`` is retained as a temporarily supported
-    compatibility variant because it occurs in the current history, but its
-    equivalence to the same physical well is not confirmed; the service emits
-    a diagnostic when it is used by the active match.  An arbitrary suffix
-    after an underscore is deliberately retained, so a new format cannot
-    silently collide with another well.
+    ``base_well_id`` is the numeric physical root used only for lineage
+    searches. ``target_well_id`` retains every suffix, including ЗБС, ПВЛГ,
+    КЛК, МЗС, and unfamiliar suffixes. Matching must use the latter.
     """
 
     raw = _clean_text(value)
     if not raw:
-        return NormalizedWell(raw=raw, base_well_id=None)
+        return NormalizedWell(raw=raw, base_well_id=None, target_well_id=None)
 
     numeric = _numeric_text(raw)
     if numeric is not None:
-        return NormalizedWell(raw=raw, base_well_id=numeric)
+        return NormalizedWell(raw=raw, base_well_id=numeric, target_well_id=numeric)
 
     upper = raw.upper()
-    variant = _VARIANT_RE.fullmatch(upper)
-    if variant is not None:
-        number = str(int(variant.group("number")))
+    variant = _SPACE_VARIANT_RE.fullmatch(upper)
+    suffix_match = _UNDERSCORE_SUFFIX_RE.fullmatch(upper)
+    if variant is not None or suffix_match is not None:
+        match = variant or suffix_match
+        assert match is not None
+        number = str(int(match.group("number")))
+        suffix = match.group("suffix").strip()
+        canonical_suffix = _SPACE_RE.sub(" ", suffix)
+        known_variant = _KNOWN_VARIANT_RE.match(canonical_suffix)
         return NormalizedWell(
             raw=raw,
             base_well_id=number,
-            recognized_variant=variant.group("marker").upper(),
+            target_well_id=f"{number}_{canonical_suffix}",
+            recognized_variant=known_variant.group(1).upper() if known_variant else None,
         )
 
+    # Keep nonnumeric identifiers whole. The old gas-branch spelling is
+    # normalized as a distinct target identity while retaining its root.
     gas_branch = _GAS_BRANCH_RE.fullmatch(upper)
     if gas_branch is not None:
         number = str(int(gas_branch.group("number")))
-        return NormalizedWell(raw=raw, base_well_id=number, recognized_variant="ГС")
-
-    # Non-numeric source identifiers such as Р-183 remain usable, but are not
-    # guessed into a numeric id.  Case is normalized for known Latin/Cyrillic
-    # service suffixes without deleting any unknown text.
-    return NormalizedWell(raw=raw, base_well_id=upper)
+        return NormalizedWell(
+            raw=raw,
+            base_well_id=number,
+            target_well_id=f"{number}_ГС",
+            recognized_variant="ГС",
+        )
+    return NormalizedWell(raw=raw, base_well_id=upper, target_well_id=upper)
 
 
 _FIELD_ALIASES = {

@@ -33,6 +33,7 @@ def _paths(tmp_path: Path) -> SourcePaths:
         gdi=tmp_path / "gdi.xlsx",
         lha=tmp_path / "lha.xlsm",
         daily_report=tmp_path / "daily.xlsm",
+        well_history=tmp_path / "well_history.xlsx",
         output=tmp_path / "result.xlsx",
     )
 
@@ -212,4 +213,26 @@ def test_status_bar_contains_only_runtime_version(monkeypatch) -> None:  # type:
 
     assert window.statusBar().currentMessage() == "Версия 0.1"
     assert "Александр Гаврись" not in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_well_history_has_browse_field_and_persists_selected_path(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    selected = str(tmp_path / "База по скважинам.xlsx")
+    persisted = []
+    monkeypatch.setattr(
+        gui_app.QFileDialog,
+        "getOpenFileName",
+        lambda *_args: (selected, "Excel workbook (*.xlsx)"),
+    )
+    monkeypatch.setattr(gui_app, "save_config", lambda config, _path: persisted.append(config))
+    window = _window(monkeypatch)
+
+    assert "well_history" in window._fields
+    window._browse("well_history")
+
+    assert window._fields["well_history"].text() == selected
+    assert len(persisted) == 1
+    assert persisted[0].well_history == selected
     window.close()

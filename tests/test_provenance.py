@@ -35,6 +35,7 @@ def _write_gdi(path: Path, rows: list[list[object]], headers: list[str] | None =
             "Выход на РФП (да/нет)",
             "Достоверность согласно ЛНД",
             "Дата проведения ГТМ",
+            "Глубина записи, м",
         ]
     )
     for row in rows:
@@ -93,7 +94,7 @@ def test_lha_invalid_date_has_exact_date_cell(tmp_path: Path) -> None:
     assert issue.locations == (SourceLocation(str(path.resolve()), LHA_SHEET, "D2"),)
 
 
-def test_lha_conflict_contains_all_conflicting_measurement_cells(tmp_path: Path) -> None:
+def test_lha_duplicate_resolution_contains_all_cells_and_selected_cell(tmp_path: Path) -> None:
     path = tmp_path / "lha.xlsm"
     latest = datetime(2026, 1, 2)
     _write_lha(
@@ -112,9 +113,12 @@ def test_lha_conflict_contains_all_conflicting_measurement_cells(tmp_path: Path)
         normalized_plast="ПК1",
     )
     issue = next(
-        issue for issue in selection.issues if issue.code == "LHA_DUPLICATE_TIMESTAMP_CONFLICT"
+        issue for issue in selection.issues if issue.code == "LHA_DUPLICATE_TIMESTAMP_RESOLVED_MAX"
     )
 
+    assert selection.cl_current == 11
+    assert issue.severity is IssueSeverity.INFO
+    assert "ячейка E3" in issue.message
     assert issue.locations == (
         SourceLocation(str(path.resolve()), LHA_SHEET, "E2"),
         SourceLocation(str(path.resolve()), LHA_SHEET, "E3"),

@@ -4,7 +4,13 @@ from itertools import pairwise
 from pathlib import Path
 
 import gdis_loader.service as service
-from gdis_loader.domain.models import DiagnosticIssue, FundParseResult, IssueSeverity, SourcePaths
+from gdis_loader.domain.models import (
+    DiagnosticIssue,
+    FundParseResult,
+    IssueSeverity,
+    SourcePaths,
+    WellHistoryParseResult,
+)
 from gdis_loader.excel.writer import TargetWriteResult
 from gdis_loader.progress import ProgressUpdate
 from gdis_loader.validation.sources import ValidationResult
@@ -17,6 +23,7 @@ def _paths(tmp_path: Path) -> SourcePaths:
         gdi=tmp_path / "gdi.xlsx",
         lha=tmp_path / "lha.xlsm",
         daily_report=tmp_path / "daily.xlsm",
+        well_history=tmp_path / "well_history.xlsx",
         output=tmp_path / "result.xlsx",
     )
 
@@ -30,6 +37,7 @@ def _stub_pipeline(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     )
     monkeypatch.setattr(service, "read_gdi", lambda _path: ((), ()))
     monkeypatch.setattr(service, "read_lha", lambda _path: ((), ()))
+    monkeypatch.setattr(service, "read_well_history", lambda *_args: WellHistoryParseResult(()))
     monkeypatch.setattr(service, "_build_target_rows", lambda *_args: ())
 
 
@@ -39,7 +47,7 @@ def test_validate_progress_is_monotonic_and_reaches_completion(monkeypatch, tmp_
 
     service.run_validate(_paths(tmp_path), progress=updates.append)
 
-    assert [update.percent for update in updates] == [0, 10, 20, 35, 50, 65, 80, 90, 100]
+    assert [update.percent for update in updates] == [0, 10, 20, 30, 45, 60, 75, 85, 90, 100]
     assert all(left.percent <= right.percent for left, right in pairwise(updates))
     assert updates[-1].stage == "Проверка завершена"
 
@@ -57,7 +65,7 @@ def test_update_progress_reports_writer_checkpoint_and_completion(
 
     service.run_update(_paths(tmp_path), progress=updates.append)
 
-    assert [update.percent for update in updates] == [0, 10, 20, 35, 50, 65, 80, 90, 95, 100]
+    assert [update.percent for update in updates] == [0, 10, 20, 30, 45, 60, 75, 85, 90, 95, 100]
     assert updates[-2].stage == "Запись листа Данные"
     assert updates[-1].stage == "Обновление завершено"
 

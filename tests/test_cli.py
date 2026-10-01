@@ -23,6 +23,8 @@ def test_validate_parser_accepts_log_path() -> None:
             "lha.xlsm",
             "--daily-report",
             "daily.xlsm",
+            "--well-history",
+            "well-history.xlsx",
             "--log",
             "custom.log",
         ]
@@ -66,6 +68,8 @@ def test_cli_validate_returns_nonzero_for_error_result(monkeypatch, capsys) -> N
                 "lha.xlsm",
                 "--daily-report",
                 "daily.xlsm",
+                "--well-history",
+                "well-history.xlsx",
                 "--log",
                 "custom.log",
             ]

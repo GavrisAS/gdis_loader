@@ -1,23 +1,30 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
 from gdis_loader.domain.models import (
+    DatePrecision,
     DiagnosticIssue,
     FundCategory,
     FundParseResult,
     FundWell,
+    GdiKind,
     GdiRecord,
     IssueSeverity,
     LhaRecord,
     LoadReport,
+    PartialDate,
     SourceLocation,
     SourcePaths,
+    WellEventKind,
+    WellHistory,
+    WellStage,
 )
 from gdis_loader.matching.matcher import GdiIndex
-from gdis_loader.matching.normalize import normalize_field_name, normalize_plast
+from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.lha import LhaIndex
 from gdis_loader.service import ServiceResult, _append_issues, _build_target_rows, run_validate
 
@@ -29,6 +36,7 @@ def _paths(tmp_path: Path) -> SourcePaths:
         gdi=tmp_path / "gdi.xlsx",
         lha=tmp_path / "lha.xlsm",
         daily_report=tmp_path / "daily.xlsm",
+        well_history=tmp_path / "well_history.xlsx",
         output=tmp_path / "result.xlsx",
     )
 
@@ -81,12 +89,41 @@ def _gdi_identity(
         lnd_reliability=None,
         gtm_date=None,
         source_row=row,
+        target_well_id=normalize_well_id(raw_well).target_well_id,
+        gdi_kind=GdiKind.ID_KVD,
         source_file="gdi.xlsx",
         source_sheet="ГДИС_Сибнефтегаз в целом",
         field_cell=f"A{row}",
         well_cell=f"B{row}",
         plast_cell=f"C{row}",
         date_cell=f"E{row}",
+    )
+
+
+def _history_stage(
+    start: PartialDate, *, kind: WellEventKind = WellEventKind.INITIAL
+) -> WellHistory:
+    location = SourceLocation(
+        "history.xlsx", "БЛУ", "C3" if kind is WellEventKind.INITIAL else "I3"
+    )
+    stage = WellStage(
+        field_name="Береговое",
+        physical_root="22",
+        source_display_well="022",
+        target_well_id="22" if kind is WellEventKind.INITIAL else None,
+        plast="ПК1",
+        event_kind=kind,
+        started_at=start,
+        stage_sequence=0 if kind is WellEventKind.INITIAL else 1,
+        source_location=location,
+        raw_block=(),
+    )
+    return WellHistory(
+        field_name="Береговое",
+        physical_root="22",
+        source_display_well="022",
+        events=(),
+        stages=(stage,),
     )
 
 
@@ -159,7 +196,7 @@ def test_summary_calls_out_new_identity_diagnostics() -> None:
     summary = ServiceResult(report).summary()
 
     assert "Коллизий целевой идентичности: 1" in summary
-    assert "Неподтвержденных вариантов МЗС: 1" in summary
+    assert "МЗС" not in summary
     assert "Нормализаций пропущенного разделителя фонда: 1" in summary
 
 
@@ -189,7 +226,7 @@ def test_warning_list_contains_only_warning_messages() -> None:
     )
 
 
-def test_lha_not_found_is_not_added_for_selection_conflict() -> None:
+def test_lha_duplicate_timestamp_uses_max_without_not_found_issue() -> None:
     field = "Береговое"
     plast = "ПК1"
     fund_well = FundWell(
@@ -217,6 +254,8 @@ def test_lha_not_found_is_not_added_for_selection_conflict() -> None:
         lnd_reliability=None,
         gtm_date=None,
         source_row=2,
+        target_well_id="11",
+        gdi_kind=GdiKind.ID,
     )
     latest = datetime(2026, 7, 2)
     lha_index = LhaIndex(
@@ -261,13 +300,14 @@ def test_lha_not_found_is_not_added_for_selection_conflict() -> None:
         report,
     )
 
-    assert rows[0].cl_current is None
-    assert report.without_lha == 1
-    assert any(issue.code == "LHA_DUPLICATE_TIMESTAMP_CONFLICT" for issue in report.issues)
+    assert rows[0].cl_current == 11
+    assert report.without_lha == 0
+    assert any(issue.code == "LHA_DUPLICATE_TIMESTAMP_RESOLVED_MAX" for issue in report.issues)
+    assert not any(issue.code == "LHA_DUPLICATE_TIMESTAMP_CONFLICT" for issue in report.issues)
     assert not any(issue.code == "LHA_NOT_FOUND" for issue in report.issues)
 
 
-def test_target_identity_collision_across_fields_is_warning_with_all_provenance() -> None:
+def test_target_scope_excludes_other_fields_before_collision_checks() -> None:
     fund_wells = (
         _fund_identity("Береговое", row=12),
         _fund_identity("Пырейное", row=21),
@@ -290,22 +330,13 @@ def test_target_identity_collision_across_fields_is_warning_with_all_provenance(
         report,
     )
 
-    collision = [issue for issue in report.issues if issue.code == "TARGET_IDENTITY_COLLISION"]
-    assert len(collision) == 1
-    assert collision[0].severity is IssueSeverity.WARNING
-    assert "22 + ПК-1" in collision[0].message
-    assert "разным месторождениям" in collision[0].message
-    assert "не хранит месторождение отдельным полем" in collision[0].message
-    assert rows[0].well == rows[1].well == "22"
-    assert rows[0].plast == rows[1].plast == "ПК-1"
-    locations = set(collision[0].locations)
-    assert SourceLocation("fund.xlsx", "01.08.2026", "C12") in locations
-    assert SourceLocation("fund.xlsx", "01.08.2026", "C21") in locations
-    assert SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "B113") in locations
-    assert SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "B1955") in locations
+    assert len(rows) == 1
+    assert rows[0].well == "22"
+    assert report.target_field_fund_total == 1
+    assert not any(issue.code == "TARGET_IDENTITY_COLLISION" for issue in report.issues)
 
 
-def test_target_identity_collision_is_not_emitted_when_target_pair_differs() -> None:
+def test_target_scope_keeps_only_beregovoe_rows() -> None:
     fund_wells = (
         _fund_identity("Береговое", row=12),
         _fund_identity("Пырейное", row=21),
@@ -328,10 +359,11 @@ def test_target_identity_collision_is_not_emitted_when_target_pair_differs() -> 
         report,
     )
 
+    assert report.target_field_fund_total == 1
     assert not any(issue.code == "TARGET_IDENTITY_COLLISION" for issue in report.issues)
 
 
-def test_unconfirmed_mzs_warns_once_for_active_match_not_history() -> None:
+def test_mzs_is_a_distinct_target_identity_from_parent() -> None:
     fund_well = _fund_identity(
         "Береговое",
         raw_well="10403",
@@ -359,21 +391,158 @@ def test_unconfirmed_mzs_warns_once_for_active_match_not_history() -> None:
         input_paths={},
     )
 
-    _build_target_rows(
+    rows = _build_target_rows(
         FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
         GdiIndex((old, latest)),
         LhaIndex([]),
         report,
     )
 
-    issues = [issue for issue in report.issues if issue.code == "UNCONFIRMED_WELL_VARIANT_MZS"]
-    assert len(issues) == 1
-    assert issues[0].severity is IssueSeverity.WARNING
-    assert SourceLocation("fund.xlsx", "01.08.2026", "C16") in issues[0].locations
-    assert SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "B1591") in issues[0].locations
-    assert (
-        SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "B1500") not in issues[0].locations
+    assert rows[0].well == "10403"
+    assert report.ambiguous == 1
+    assert report.no_gdi == 0
+    assert not any(issue.code == "UNCONFIRMED_WELL_VARIANT_MZS" for issue in report.issues)
+
+
+def test_confirmed_launch_lnd_depth_and_temporary_gtm_are_written() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(
+        _gdi_identity("Береговое"),
+        rfp_result="да",
+        lnd_reliability="Высокая",
+        depth_raw_value=0,
+        depth_value=0.0,
+        rfp_cell="AU100",
+        lnd_reliability_cell="AW100",
+        depth_cell="N100",
     )
+    report = LoadReport("now", "0.1", "3.14", {})
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+        date(2026, 10, 1),
+    )
+
+    assert rows[0].launch_date == date(2020, 1, 1)
+    assert rows[0].gtm == "Нет"
+    assert rows[0].lnd == "Нет"
+    assert rows[0].downhole_sensors == "Нет"
+    assert report.launch_date_filled == 1
+    assert report.lnd_false == 1
+    assert report.downhole_no == 1
+
+
+def test_lnd_positive_condition_succeeds_when_second_value_is_missing() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(
+        _gdi_identity("Береговое"),
+        rfp_result="нет",
+        lnd_reliability=None,
+        depth_raw_value=2,
+        depth_value=2.0,
+        rfp_cell="AU100",
+        lnd_reliability_cell="AW100",
+        depth_cell="N100",
+    )
+    report = LoadReport("now", "0.1", "3.14", {})
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+    )
+
+    assert rows[0].lnd == "Да"
+    assert rows[0].downhole_sensors == "Да"
+    assert report.lnd_true == 1
+    assert report.lnd_unknown == 0
+
+
+def test_lnd_and_depth_unknowns_stay_blank_with_source_cells() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(
+        _gdi_identity("Береговое"),
+        rfp_result="да",
+        lnd_reliability=None,
+        depth_raw_value=None,
+        depth_value=None,
+        rfp_cell="AU100",
+        lnd_reliability_cell="AW100",
+        depth_cell="N100",
+    )
+    report = LoadReport("now", "0.1", "3.14", {})
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+    )
+
+    assert rows[0].lnd is None
+    assert rows[0].downhole_sensors is None
+    assert report.lnd_unknown == 1
+    assert report.downhole_unknown == 1
+    lnd_issue = next(issue for issue in report.issues if issue.code == "LND_SOURCE_INCOMPLETE")
+    depth_issue = next(issue for issue in report.issues if issue.code == "GDI_DEPTH_UNKNOWN")
+    assert lnd_issue.locations == (
+        SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "AU100"),
+        SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "AW100"),
+    )
+    assert depth_issue.locations == (
+        SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "N100"),
+    )
+
+
+def test_month_precision_launch_stays_blank_with_exact_provenance() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(_gdi_identity("Береговое"), date_cell="E100")
+    report = LoadReport("now", "0.1", "3.14", {})
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 7, None, DatePrecision.MONTH)),),
+    )
+
+    assert rows[0].launch_date is None
+    assert report.launch_date_incomplete == 1
+    issue = next(
+        issue for issue in report.issues if issue.code == "WELL_HISTORY_DATE_INCOMPLETE_PRECISION"
+    )
+    assert issue.locations == (SourceLocation("history.xlsx", "БЛУ", "C3"),)
+
+
+def test_same_month_launch_and_gdi_is_lifecycle_ambiguous() -> None:
+    fund_well = _fund_identity("Береговое")
+    record = replace(
+        _gdi_identity("Береговое", when=datetime(2023, 6, 15)),
+        date_cell="E100",
+    )
+    history = _history_stage(PartialDate(2023, 6, None, DatePrecision.MONTH))
+    report = LoadReport("now", "0.1", "3.14", {})
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (history,),
+    )
+
+    assert rows[0].launch_date is None
+    issue = next(issue for issue in report.issues if issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS")
+    assert SourceLocation("history.xlsx", "БЛУ", "C3") in issue.locations
+    assert SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "E100") in issue.locations
 
 
 def test_info_issue_is_logged_at_info_level(caplog) -> None:  # type: ignore[no-untyped-def]

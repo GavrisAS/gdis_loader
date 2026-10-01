@@ -24,6 +24,9 @@ from gdis_loader.readers.gdi import GDI_HEADER_ALIASES, GDI_SHEET
 from gdis_loader.readers.gdi import _find_header as find_gdi_header
 from gdis_loader.readers.lha import LHA_HEADER_ALIASES, LHA_SHEET
 from gdis_loader.readers.lha import _find_header as find_lha_header
+from gdis_loader.readers.well_history import (
+    find_well_history_schema,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +261,33 @@ def _check_daily(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> No
         )
 
 
+def _check_well_history(workbook: Any, path: Path, issues: list[DiagnosticIssue]) -> None:
+    sheet_name = "БЛУ"
+    if sheet_name not in workbook.sheetnames:  # type: ignore[attr-defined]
+        issues.append(
+            DiagnosticIssue(
+                code="WELL_HISTORY_SHEET_MISSING",
+                severity=IssueSeverity.ERROR,
+                message=f"В базе истории скважин отсутствует лист {sheet_name!r}.",
+                source="well_history",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=sheet_name),),
+            )
+        )
+        return
+    if find_well_history_schema(workbook[sheet_name]) is None:  # type: ignore[index]
+        issues.append(
+            DiagnosticIssue(
+                code="WELL_HISTORY_SCHEMA_INVALID",
+                severity=IssueSeverity.ERROR,
+                message=(
+                    "На листе БЛУ не распознаны двухстрочные заголовки и динамические блоки ГТМ."
+                ),
+                source="well_history",
+                locations=(SourceLocation(file=str(path.resolve()), sheet=sheet_name),),
+            )
+        )
+
+
 def validate_inputs(paths: SourcePaths) -> ValidationResult:
     """Validate all paths and workbook schemas in one pass of findings."""
 
@@ -268,6 +298,7 @@ def validate_inputs(paths: SourcePaths) -> ValidationResult:
         (paths.gdi, {".xlsx"}, "сводная таблица ГДИ", _check_gdi),
         (paths.lha, {".xlsm"}, "база ЛХА", _check_lha),
         (paths.daily_report, {".xlsm"}, "суточный рапорт", _check_daily),
+        (paths.well_history, {".xlsx"}, "база истории скважин", _check_well_history),
     )
     for path, suffixes, label, checker in source_specs:
         path_issues = _check_path(path, suffixes, label)

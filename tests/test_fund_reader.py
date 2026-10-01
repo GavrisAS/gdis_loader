@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def test_fund_chooses_latest_non_rspn_sheet_and_all_categories(tmp_path: Path) -
     assert result.fund_date is not None
     assert len(result.wells) == 7
     assert {well.source_category for well in result.wells} == {
-        FundCategory.PRODUCING,
+        FundCategory.PRODUCING_GAS,
         FundCategory.STOPPED_IN_REPORTING_MONTH,
         FundCategory.INACTIVE_CURRENT_YEAR,
         FundCategory.INACTIVE_PREVIOUS_YEARS,
@@ -63,6 +64,9 @@ def test_fund_chooses_latest_non_rspn_sheet_and_all_categories(tmp_path: Path) -
     assert result.wells[0].raw_display == "011"
     assert result.wells[0].base_well_id == "11"
     assert result.wells[0].object_plast_hint == "ПК1"
+    assert all(well.is_rating_eligible for well in result.wells[:3])
+    assert not any(well.is_rating_eligible for well in result.wells[3:])
+    assert replace(result.wells[0], source_category=FundCategory.PRODUCING).is_rating_eligible
     assert not any(well.raw_display == "018" for well in result.wells)
     assert not any(issue.code == "FUND_COUNT_MISMATCH" for issue in result.issues)
     j_issue = next(issue for issue in result.issues if issue.code == "FUND_CATEGORY_J_IGNORED")

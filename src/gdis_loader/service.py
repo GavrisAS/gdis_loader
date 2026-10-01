@@ -8,14 +8,16 @@ import platform
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from gdis_loader import __version__
 from gdis_loader.domain.models import (
+    DatePrecision,
     DiagnosticIssue,
     FundParseResult,
     FundWell,
+    GdiKind,
     GdiRecord,
     IssueSeverity,
     LoadReport,
@@ -23,14 +25,19 @@ from gdis_loader.domain.models import (
     SourceLocation,
     SourcePaths,
     TargetRow,
+    WellHistory,
+    WellHistoryParseResult,
 )
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
+from gdis_loader.matching.lifecycle import LifecycleResolution, resolve_lifecycle_stage
 from gdis_loader.matching.matcher import GdiIndex, match_all
-from gdis_loader.matching.normalize import normalize_well_id
+from gdis_loader.matching.normalize import normalize_field_name
 from gdis_loader.progress import ProgressCallback, ProgressUpdate
 from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.lha import LhaIndex, read_lha
+from gdis_loader.readers.well_history import read_well_history
+from gdis_loader.transforms.rules import downhole_condition, lnd_condition
 from gdis_loader.validation.sources import ValidationResult, validate_inputs
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +82,8 @@ class ServiceResult:
         report = self.report
         lines = [
             f"Скважин в фонде: {report.fund_total}",
+            f"Фонд Берегового: {report.target_field_fund_total}",
+            f"Допущено к рейтингу по подтвержденной категории: {report.rating_eligible}",
             f"Однозначно сопоставлено: {report.matched}",
             f"Неоднозначно: {report.ambiguous}",
             f"Без ГДИ: {report.no_gdi}",
@@ -87,9 +96,6 @@ class ServiceResult:
         collision_count = self.issue_count("TARGET_IDENTITY_COLLISION")
         if collision_count:
             lines.append(f"Коллизий целевой идентичности: {collision_count}")
-        mzs_count = self.issue_count("UNCONFIRMED_WELL_VARIANT_MZS")
-        if mzs_count:
-            lines.append(f"Неподтвержденных вариантов МЗС: {mzs_count}")
         separator_count = self.issue_count("FUND_MISSING_SEPARATOR_NORMALIZED")
         if separator_count:
             lines.append(f"Нормализаций пропущенного разделителя фонда: {separator_count}")
@@ -135,7 +141,7 @@ def configure_logging(path: Path) -> Path:
     return path
 
 
-def _new_report(paths: SourcePaths) -> LoadReport:
+def _new_report(paths: SourcePaths, calculation_date: date) -> LoadReport:
     return LoadReport(
         timestamp=datetime.now(UTC).isoformat(),
         app_version=__version__,
@@ -146,14 +152,18 @@ def _new_report(paths: SourcePaths) -> LoadReport:
             "gdi": str(paths.gdi.resolve()),
             "lha": str(paths.lha.resolve()),
             "daily_report": str(paths.daily_report.resolve()),
+            "well_history": str(paths.well_history.resolve()),
             "output": str(paths.output.resolve()),
         },
+        calculation_date=calculation_date,
     )
 
 
 def _append_issues(report: LoadReport, issues: Iterable[DiagnosticIssue]) -> None:
     for issue in issues:
         report.issues.append(issue)
+        if issue.code == "LHA_DUPLICATE_TIMESTAMP_RESOLVED_MAX":
+            report.lha_duplicate_resolved_max += 1
         if issue.severity is IssueSeverity.WARNING:
             report.warnings.append(issue.message)
         if issue.severity is IssueSeverity.INFO:
@@ -277,46 +287,64 @@ def _append_target_identity_collisions(
         )
 
 
-def _append_unconfirmed_mzs_issue(
+def _launch_date_for_target(
     fund_well: FundWell,
-    gdi_record: GdiRecord,
+    record: GdiRecord | None,
+    histories: tuple[WellHistory, ...],
     report: LoadReport,
-    reported: set[tuple[str, str | None, str | None, str | None]],
-) -> None:
-    """Warn once when the selected current match relies on the unconfirmed МЗС marker."""
+    resolution: LifecycleResolution | None = None,
+) -> date | None:
+    """Return a launch date only when lifecycle and source precision are exact."""
 
-    fund_variant = normalize_well_id(fund_well.raw_display).recognized_variant
-    gdi_variant = normalize_well_id(gdi_record.raw_well_name).recognized_variant
-    if fund_variant != "МЗС" and gdi_variant != "МЗС":
-        return
-    key = (
-        fund_well.normalized_field,
-        fund_well.base_well_id,
-        gdi_record.raw_well_name,
-        gdi_record.normalized_plast,
-    )
-    if key in reported:
-        return
-    reported.add(key)
-    _append_issues(
-        report,
-        (
-            DiagnosticIssue(
-                code="UNCONFIRMED_WELL_VARIANT_MZS",
-                severity=IssueSeverity.WARNING,
-                message=(
-                    f"В актуальном сопоставлении {fund_well.raw_display!r} / "
-                    f"{gdi_record.raw_plast!r} используется маркер МЗС в обозначении "
-                    f"ГДИ {gdi_record.raw_well_name!r}; МЗС временно поддерживается "
-                    "для matching, но его эквивалентность той же физической скважине "
-                    "пока не подтверждена заказчиком."
+    resolution = resolution or resolve_lifecycle_stage(fund_well, record, histories)
+    if resolution.issue is not None:
+        report.launch_date_missing += 1
+        _append_issues(report, (resolution.issue,))
+        return None
+    stage = resolution.stage
+    if stage is None:
+        report.launch_date_missing += 1
+        locations = list(fund_well.locations)
+        if record is not None:
+            locations.extend(record.locations)
+        _append_issues(
+            report,
+            (
+                DiagnosticIssue(
+                    code="WELL_HISTORY_STAGE_NOT_FOUND",
+                    severity=IssueSeverity.WARNING,
+                    message="Для целевой идентичности не найдена однозначная дата начала истории.",
+                    source="well_history",
+                    well_id=fund_well.base_well_id,
+                    locations=_unique_locations(locations),
                 ),
-                source="matching",
-                well_id=fund_well.base_well_id,
-                locations=_unique_locations((*fund_well.locations, *gdi_record.locations)),
             ),
-        ),
-    )
+        )
+        return None
+
+    launch = stage.started_at
+    if launch.precision is not DatePrecision.DAY:
+        report.launch_date_incomplete += 1
+        _append_issues(
+            report,
+            (
+                DiagnosticIssue(
+                    code="WELL_HISTORY_DATE_INCOMPLETE_PRECISION",
+                    severity=IssueSeverity.WARNING,
+                    message=(
+                        f"Дата начала истории имеет точность {launch.precision.value}; "
+                        "точная дата в лист Данные не записана."
+                    ),
+                    source="well_history",
+                    well_id=fund_well.base_well_id,
+                    locations=(stage.source_location,),
+                ),
+            ),
+        )
+        return None
+    assert launch.month is not None and launch.day is not None
+    report.launch_date_filled += 1
+    return date(launch.year, launch.month, launch.day)
 
 
 def _build_target_rows(
@@ -324,24 +352,106 @@ def _build_target_rows(
     gdi_index: GdiIndex,
     lha_index: LhaIndex,
     report: LoadReport,
+    histories: tuple[WellHistory, ...] = (),
+    calculation_date: date | None = None,
 ) -> tuple[TargetRow, ...]:
-    matches, match_issues = match_all(fund.wells, gdi_index)
+    target_field = normalize_field_name(report.target_field)
+    scoped_wells = tuple(well for well in fund.wells if well.normalized_field == target_field)
+    matches, match_issues = match_all(scoped_wells, gdi_index, histories)
     _append_issues(report, match_issues)
-    report.fund_total = len(fund.wells)
+    report.fund_total_source = len(fund.wells)
+    report.target_field_fund_total = len(scoped_wells)
+    report.fund_total = report.fund_total_source
+    report.rating_eligible = sum(well.is_rating_eligible for well in scoped_wells)
+    report.rating_not_eligible = len(scoped_wells) - report.rating_eligible
     target_rows: list[TargetRow] = []
     target_identity_evidence: list[tuple[TargetRow, FundWell, GdiRecord]] = []
-    reported_mzs: set[tuple[str, str | None, str | None, str | None]] = set()
     for match in matches:
         fund_well = match.fund_well
         if match.status is MatchStatus.MATCHED and match.record is not None:
             record = match.record
-            _append_unconfirmed_mzs_issue(fund_well, record, report, reported_mzs)
+            lifecycle = resolve_lifecycle_stage(fund_well, record, histories)
+            launch_date = _launch_date_for_target(
+                fund_well,
+                record,
+                histories,
+                report,
+                lifecycle,
+            )
+            lnd_value = lnd_condition(record.rfp_result, record.lnd_reliability)
+            if lnd_value is None:
+                report.lnd_unknown += 1
+                _append_issues(
+                    report,
+                    (
+                        DiagnosticIssue(
+                            code="LND_SOURCE_INCOMPLETE",
+                            severity=IssueSeverity.WARNING,
+                            message=(
+                                "Для признака ЛНД отсутствует или не распознано хотя бы одно "
+                                "исходное значение; поле оставлено пустым."
+                            ),
+                            source="gdi",
+                            well_id=fund_well.base_well_id,
+                            locations=record.lnd_locations,
+                        ),
+                    ),
+                )
+                target_lnd = None
+            else:
+                target_lnd = "Да" if lnd_value else "Нет"
+                if lnd_value:
+                    report.lnd_true += 1
+                else:
+                    report.lnd_false += 1
+
+            downhole_value = downhole_condition(record.depth_raw_value)
+            if downhole_value is None:
+                report.downhole_unknown += 1
+                _append_issues(
+                    report,
+                    (
+                        DiagnosticIssue(
+                            code="GDI_DEPTH_UNKNOWN",
+                            severity=IssueSeverity.WARNING,
+                            message=(
+                                "Глубина записи отсутствует или не распознана; "
+                                "поле «Глубинные датчики» оставлено пустым."
+                            ),
+                            source="gdi",
+                            well_id=fund_well.base_well_id,
+                            locations=(
+                                SourceLocation(
+                                    file=record.source_file,
+                                    sheet=record.source_sheet,
+                                    cell=record.depth_cell,
+                                ),
+                            )
+                            if record.source_file and record.depth_cell
+                            else (),
+                        ),
+                    ),
+                )
+                downhole_cell = None
+            else:
+                downhole_cell = "Да" if downhole_value else "Нет"
+                if downhole_value:
+                    report.downhole_yes += 1
+                else:
+                    report.downhole_no += 1
             lha_values = (
                 lha_index.select(
                     base_well_id=fund_well.base_well_id or "",
                     normalized_field=fund_well.normalized_field,
                     normalized_plast=record.normalized_plast or "",
-                    cutoff=datetime.combine(fund_well.fund_date, datetime.max.time()),
+                    cutoff=datetime.combine(
+                        calculation_date or report.calculation_date or fund_well.fund_date,
+                        time.max,
+                    ),
+                    target_well_id=record.target_well_id,
+                    physical_root=fund_well.base_well_id,
+                    histories=histories,
+                    lifecycle_stage=lifecycle.stage,
                 )
                 if record.normalized_plast is not None
                 else None
@@ -376,8 +486,12 @@ def _build_target_rows(
                         ),
                     )
             target_row = TargetRow(
-                well=record.raw_well_name,
+                well=record.target_well_id or record.raw_well_name,
                 plast=record.raw_plast,
+                launch_date=launch_date,
+                downhole_sensors=downhole_cell,
+                gtm="Нет",
+                lnd=target_lnd,
                 cl_current=cl_current,
                 cl_previous=cl_previous,
                 vgf_current=vgf_current,
@@ -394,7 +508,18 @@ def _build_target_rows(
             report.ambiguous += 1
         else:
             report.invalid_source += 1
-        target_rows.append(TargetRow(well=fund_well.raw_display))
+        launch_date = (
+            _launch_date_for_target(fund_well, None, histories, report)
+            if match.status is MatchStatus.NO_GDI
+            else None
+        )
+        target_rows.append(
+            TargetRow(
+                well=fund_well.target_well_id or fund_well.raw_display,
+                launch_date=launch_date,
+                gtm="Нет",
+            )
+        )
         _append_issues(
             report,
             (
@@ -445,8 +570,9 @@ def _build_target_rows(
 def _prepare(
     paths: SourcePaths,
     report: LoadReport,
+    calculation_date: date,
     progress: ProgressCallback | None = None,
-) -> tuple[tuple[TargetRow, ...], FundParseResult]:
+) -> tuple[tuple[TargetRow, ...], FundParseResult, WellHistoryParseResult]:
     """Read the sources that currently contribute to the target row.
 
     The daily report is schema-validated before this function is called, but
@@ -458,35 +584,61 @@ def _prepare(
     _report_progress(progress, 20, "Чтение фонда скважин")
     fund = read_fund(paths.fund)
     _append_issues(report, fund.issues)
-    _report_progress(progress, 35, "Чтение истории ГДИ")
+    _report_progress(progress, 30, "Чтение базы истории скважин")
+    well_history = read_well_history(paths.well_history, report.target_field)
+    _append_issues(report, well_history.issues)
+    report.well_history_records = len(well_history.histories)
+    report.well_history_event_counts = well_history.event_counts
+    report.well_history_gtm_events = sum(well_history.event_counts.values())
+    report.well_history_date_precision_counts = well_history.date_precision_counts
+    _report_progress(progress, 45, "Чтение истории ГДИ")
     gdi_records, gdi_issues = read_gdi(paths.gdi)
     _append_issues(report, gdi_issues)
-    _report_progress(progress, 50, "Чтение базы ЛХА")
+    target_field = normalize_field_name(report.target_field)
+    scoped_gdi_records = tuple(
+        record for record in gdi_records if record.normalized_field == target_field
+    )
+    gdi_counts: defaultdict[str, int] = defaultdict(int)
+    for record in scoped_gdi_records:
+        gdi_counts[record.gdi_kind.value] += 1
+    report.gdi_kind_counts = dict(sorted(gdi_counts.items()))
+    report.gdi_kind_unknown = gdi_counts[GdiKind.UNKNOWN.value]
+    _report_progress(progress, 60, "Чтение базы ЛХА")
     lha_records, lha_issues = read_lha(paths.lha)
     _append_issues(report, lha_issues)
     report.fund_date = fund.fund_date
-    _report_progress(progress, 65, "Сопоставление скважин")
-    target_rows = _build_target_rows(fund, GdiIndex(gdi_records), LhaIndex(lha_records), report)
-    _report_progress(progress, 80, "Подготовка итоговых строк")
-    return target_rows, fund
+    _report_progress(progress, 75, "Сопоставление жизненных циклов")
+    target_rows = _build_target_rows(
+        fund,
+        GdiIndex(gdi_records, calculation_date),
+        LhaIndex(lha_records),
+        report,
+        well_history.histories,
+        calculation_date,
+    )
+    _report_progress(progress, 85, "Подготовка итоговых строк")
+    return target_rows, fund, well_history
 
 
 def run_validate(
     paths: SourcePaths,
     log_path: Path | None = None,
     progress: ProgressCallback | None = None,
+    *,
+    calculation_date: date | None = None,
 ) -> ServiceResult:
     """Validate schemas and, when possible, prepare sources without writing Excel."""
 
     _report_progress(progress, 0, "Старт проверки")
+    operation_date = calculation_date or date.today()
     actual_log_path = configure_logging(log_path or paths.output.parent / "gdis_loader.log")
-    report = _new_report(paths)
+    report = _new_report(paths, operation_date)
     report.log_path = str(actual_log_path.resolve())
     validation = validate_inputs(paths)
     _append_issues(report, validation.issues)
     _report_progress(progress, 10, "Проверка путей и структуры файлов")
     if validation.valid:
-        _prepare(paths, report, progress)
+        _prepare(paths, report, operation_date, progress)
         _report_progress(progress, 90, "Валидация результата")
     report.diagnostic_path = str(diagnostic_path(paths.output).resolve())
     _write_report(report, Path(report.diagnostic_path))
@@ -501,12 +653,15 @@ def run_update(
     paths: SourcePaths,
     log_path: Path | None = None,
     progress: ProgressCallback | None = None,
+    *,
+    calculation_date: date | None = None,
 ) -> ServiceResult:
     """Run the shared ETL pipeline and write a safe copy of the calculator."""
 
     _report_progress(progress, 0, "Старт обновления")
+    operation_date = calculation_date or date.today()
     actual_log_path = configure_logging(log_path or paths.output.parent / "gdis_loader.log")
-    report = _new_report(paths)
+    report = _new_report(paths, operation_date)
     report.log_path = str(actual_log_path.resolve())
     LOGGER.info("Начало обновления; output=%s", paths.output)
     validation = validate_inputs(paths)
@@ -517,7 +672,7 @@ def run_update(
         _write_report(report, Path(report.diagnostic_path))
         raise ServiceError(f"Проверка файлов не пройдена:\n{_validation_failure(validation)}")
     try:
-        target_rows, _ = _prepare(paths, report, progress)
+        target_rows, _, _ = _prepare(paths, report, operation_date, progress)
         if any(issue.severity is IssueSeverity.ERROR for issue in report.issues):
             _write_report(report, Path(report.diagnostic_path))
             raise ServiceError(f"Чтение источников не пройдено:\n{_report_error_text(report)}")

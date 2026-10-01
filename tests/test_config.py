@@ -20,6 +20,7 @@ def test_config_round_trip_preserves_unicode_and_windows_style_paths(tmp_path: P
         gdi="Сводная таблица ГДИ.xlsx",
         lha="База ЛХА_Итог!.xlsm",
         daily_report="07.2026 рапорт.xlsm",
+        well_history="База по скважинам.xlsx",
         output="Результат.xlsx",
         last_directory="C:\\Данные",
     )

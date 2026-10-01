@@ -59,6 +59,7 @@ _FILE_FIELDS: tuple[tuple[str, str, str, bool], ...] = (
     ("gdi", "Сводная таблица ГДИ", "Excel workbook (*.xlsx);;All files (*)", False),
     ("lha", "База ЛХА", "Excel macro workbook (*.xlsm);;All files (*)", False),
     ("daily_report", "Суточный рапорт", "Excel macro workbook (*.xlsm);;All files (*)", False),
+    ("well_history", "База по скважинам", "Excel workbook (*.xlsx);;All files (*)", False),
     ("output", "Результат", "Excel workbook (*.xlsx);;All files (*)", True),
 )
 
@@ -233,6 +234,7 @@ class LoaderWindow(QMainWindow):
             gdi=Path(values.gdi),
             lha=Path(values.lha),
             daily_report=Path(values.daily_report),
+            well_history=Path(values.well_history),
             output=output,
         )
 

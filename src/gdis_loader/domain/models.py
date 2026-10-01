@@ -20,7 +20,8 @@ class IssueSeverity(StrEnum):
 class FundCategory(StrEnum):
     """Operational fund categories read from columns C, D, G, and H."""
 
-    PRODUCING = "дающие газ"
+    PRODUCING = "дающие"
+    PRODUCING_GAS = "дающие газ"
     STOPPED_IN_REPORTING_MONTH = "остановленные в отчетном месяце"
     INACTIVE_CURRENT_YEAR = "бездействующие текущего года"
     INACTIVE_PREVIOUS_YEARS = "бездействующие прошлых лет"
@@ -35,7 +36,36 @@ class MatchStatus(StrEnum):
     INVALID_SOURCE = "INVALID_SOURCE"
 
 
-CellValue = str | int | float | date | datetime | None
+class DatePrecision(StrEnum):
+    """Known calendar precision of a source date."""
+
+    DAY = "day"
+    MONTH = "month"
+    YEAR = "year"
+
+
+class GdiKind(StrEnum):
+    """Customer-approved top-level classification of a GDI source row."""
+
+    ID = "ID"
+    ID_KVD = "ID_KVD"
+    KVD = "KVD"
+    EXCLUDED = "EXCLUDED"
+    UNKNOWN = "UNKNOWN"
+
+
+class WellEventKind(StrEnum):
+    """Event labels stored in the well history source."""
+
+    INITIAL = "INITIAL"
+    ZBS = "ЗБС"
+    PVLG = "ПВЛГ"
+    PVR = "ПВР"
+    KLK = "КЛК"
+    OTHER = "OTHER"
+
+
+CellValue = str | int | float | bool | date | datetime | None
 
 TARGET_FIELDS: tuple[str, ...] = (
     "Скважина",
@@ -68,16 +98,12 @@ TARGET_FIELDS: tuple[str, ...] = (
 
 INTENTIONALLY_BLANK_FIELDS: tuple[str, ...] = (
     "Состояние",
-    "Дата запуска",
     "Количество ГДИ",
-    "Глубинные датчики",
     "Расходомер",
-    "ГТМ",
     "Недостаточно ГДИС",
     "Снижение продуктивности",
     "Рост хлора",
     "Проблемы ГДМ",
-    "ЛНД",
     "Последний АДД",
     "Не проведен АДД",
     "Продолжительность без ГДИ",
@@ -100,6 +126,40 @@ class SourceLocation:
 
     def to_dict(self) -> dict[str, str | None]:
         return {"file": self.file, "sheet": self.sheet, "cell": self.cell}
+
+
+@dataclass(frozen=True, slots=True)
+class PartialDate:
+    """Calendar date that retains the precision present in its source cell."""
+
+    year: int
+    month: int | None
+    day: int | None
+    precision: DatePrecision
+
+    def __post_init__(self) -> None:
+        if self.year < 1 or self.year > 9999:
+            raise ValueError("year must be in the range 1..9999")
+        if self.precision is DatePrecision.YEAR and (
+            self.month is not None or self.day is not None
+        ):
+            raise ValueError("YEAR precision cannot contain month or day")
+        if self.precision is DatePrecision.MONTH and (self.month is None or self.day is not None):
+            raise ValueError("MONTH precision requires a month and no day")
+        if self.precision is DatePrecision.DAY and (self.month is None or self.day is None):
+            raise ValueError("DAY precision requires month and day")
+        if self.month is not None and not 1 <= self.month <= 12:
+            raise ValueError("month must be in the range 1..12")
+        if self.day is not None:
+            date(self.year, self.month or 1, self.day)
+
+    def to_dict(self) -> dict[str, int | str | None]:
+        return {
+            "year": self.year,
+            "month": self.month,
+            "day": self.day,
+            "precision": self.precision.value,
+        }
 
 
 def source_locations(
@@ -153,6 +213,7 @@ class FundWell:
     fund_date: date
     source_row: int
     source_column: str
+    target_well_id: str | None = None
     object_plast_hint: str | None = None
     source_file: str = ""
     source_sheet: str | None = None
@@ -173,6 +234,16 @@ class FundWell:
             cell,
         )
 
+    @property
+    def is_rating_eligible(self) -> bool:
+        """Return the separately tracked eligibility confirmed for two groups."""
+
+        return self.source_category in {
+            FundCategory.PRODUCING,
+            FundCategory.PRODUCING_GAS,
+            FundCategory.STOPPED_IN_REPORTING_MONTH,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class FundParseResult:
@@ -182,6 +253,59 @@ class FundParseResult:
     fund_date: date | None
     sheet_name: str | None
     issues: tuple[DiagnosticIssue, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class WellEvent:
+    """One initial commissioning or GTM event from the well history workbook."""
+
+    field_name: str
+    physical_root: str
+    source_display_well: str
+    plast: str | None
+    event_kind: WellEventKind
+    event_label: str | None
+    event_date: PartialDate | None
+    source_location: SourceLocation
+    raw_block: tuple[CellValue, ...]
+    block_number: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WellStage:
+    """A lifecycle interval seeded by a confirmed boundary event."""
+
+    field_name: str
+    physical_root: str
+    source_display_well: str
+    target_well_id: str | None
+    plast: str | None
+    event_kind: WellEventKind
+    started_at: PartialDate
+    stage_sequence: int
+    source_location: SourceLocation
+    raw_block: tuple[CellValue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WellHistory:
+    """All retained stages and source events for one well history row."""
+
+    field_name: str
+    physical_root: str
+    source_display_well: str
+    events: tuple[WellEvent, ...]
+    stages: tuple[WellStage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WellHistoryParseResult:
+    """Parsed history rows, schema provenance, and date/event diagnostics."""
+
+    histories: tuple[WellHistory, ...]
+    issues: tuple[DiagnosticIssue, ...] = ()
+    event_counts: dict[str, int] = field(default_factory=dict)
+    date_precision_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +331,13 @@ class GdiRecord:
     plast_cell: str | None = None
     date_cell: str | None = None
     gtm_date_cell: str | None = None
+    target_well_id: str | None = None
+    gdi_kind: GdiKind = GdiKind.UNKNOWN
+    depth_raw_value: CellValue = None
+    depth_value: float | None = None
+    depth_cell: str | None = None
+    rfp_cell: str | None = None
+    lnd_reliability_cell: str | None = None
 
     @property
     def locations(self) -> tuple[SourceLocation, ...]:
@@ -225,7 +356,30 @@ class GdiRecord:
     def completion_key(self) -> tuple[str | None, str | None, str | None]:
         """Values that define a distinct current completion configuration."""
 
-        return (self.raw_well_name, self.normalized_plast, self.normalized_field)
+        return (
+            self.target_well_id or self.raw_well_name,
+            self.normalized_plast,
+            self.normalized_field,
+        )
+
+    @property
+    def is_downhole_measurement(self) -> bool | None:
+        """Return the confirmed per-study depth classification when numeric."""
+
+        if self.depth_value is None:
+            return None
+        return self.depth_value > 0
+
+    @property
+    def lnd_locations(self) -> tuple[SourceLocation, ...]:
+        """Return both exact cells needed for the LND rule, including blanks."""
+
+        return source_locations(
+            self.source_file,
+            self.source_sheet,
+            self.rfp_cell,
+            self.lnd_reliability_cell,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +404,9 @@ class LhaRecord:
     date_cell: str | None = None
     cl_cell: str | None = None
     vgf_cell: str | None = None
+    target_well_id: str | None = None
+    raw_cl_value: CellValue = None
+    raw_vgf_value: CellValue = None
 
     def metric_locations(self, metric: str) -> tuple[SourceLocation, ...]:
         """Return the exact measurement cell for a metric."""
@@ -399,7 +556,13 @@ class LoadReport:
     python_version: str
     input_paths: dict[str, str]
     fund_date: date | None = None
+    calculation_date: date | None = None
     fund_total: int = 0
+    fund_total_source: int = 0
+    target_field: str = "Береговое"
+    target_field_fund_total: int = 0
+    rating_eligible: int = 0
+    rating_not_eligible: int = 0
     matched: int = 0
     no_gdi: int = 0
     ambiguous: int = 0
@@ -409,6 +572,22 @@ class LoadReport:
     without_lha: int = 0
     rows_prepared: int = 0
     rows_written: int = 0
+    well_history_records: int = 0
+    well_history_gtm_events: int = 0
+    well_history_event_counts: dict[str, int] = field(default_factory=dict)
+    well_history_date_precision_counts: dict[str, int] = field(default_factory=dict)
+    gdi_kind_counts: dict[str, int] = field(default_factory=dict)
+    gdi_kind_unknown: int = 0
+    lha_duplicate_resolved_max: int = 0
+    launch_date_filled: int = 0
+    launch_date_incomplete: int = 0
+    launch_date_missing: int = 0
+    lnd_true: int = 0
+    lnd_false: int = 0
+    lnd_unknown: int = 0
+    downhole_yes: int = 0
+    downhole_no: int = 0
+    downhole_unknown: int = 0
     warnings: list[str] = field(default_factory=list)
     issues: list[DiagnosticIssue] = field(default_factory=list)
     intentionally_blank_fields: tuple[str, ...] = INTENTIONALLY_BLANK_FIELDS
@@ -421,6 +600,9 @@ class LoadReport:
 
         result: dict[str, Any] = asdict(self)
         result["fund_date"] = self.fund_date.isoformat() if self.fund_date else None
+        result["calculation_date"] = (
+            self.calculation_date.isoformat() if self.calculation_date else None
+        )
         result["issues"] = [issue.to_dict() for issue in self.issues]
         return result
 
@@ -434,4 +616,5 @@ class SourcePaths:
     gdi: Path
     lha: Path
     daily_report: Path
+    well_history: Path
     output: Path

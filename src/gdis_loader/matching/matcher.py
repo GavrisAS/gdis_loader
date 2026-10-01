@@ -4,49 +4,153 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from gdis_loader.domain.models import (
     DiagnosticIssue,
     FundWell,
+    GdiKind,
     GdiRecord,
     IssueSeverity,
     MatchResult,
     MatchStatus,
+    WellHistory,
 )
+from gdis_loader.matching.lifecycle import resolve_lifecycle_stage
+from gdis_loader.matching.normalize import normalize_well_id
+
+RATING_GDI_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
 
 
 class GdiIndex:
     """Index valid GDI records once; no source workbook is reread per well."""
 
-    def __init__(self, records: Iterable[GdiRecord]) -> None:
+    def __init__(self, records: Iterable[GdiRecord], calculation_date: date | None = None) -> None:
+        self._calculation_date = calculation_date
         grouped: defaultdict[str, list[GdiRecord]] = defaultdict(list)
+        by_root: defaultdict[str, list[GdiRecord]] = defaultdict(list)
         for record in records:
+            if record.gdi_kind not in RATING_GDI_KINDS:
+                continue
+            target_id = record.target_well_id or (
+                normalize_well_id(record.raw_well_name).target_well_id
+                if record.raw_well_name is not None
+                else None
+            )
             if (
-                record.base_well_id is not None
+                target_id is not None
                 and record.normalized_field is not None
                 and record.normalized_plast is not None
                 and record.study_date is not None
             ):
-                grouped[record.base_well_id].append(record)
-        self._by_base_well = {key: tuple(items) for key, items in grouped.items()}
+                grouped[target_id].append(record)
+                physical_root = record.base_well_id or normalize_well_id(target_id).base_well_id
+                if physical_root is not None:
+                    by_root[physical_root].append(record)
+        self._by_target_identity = {key: tuple(items) for key, items in grouped.items()}
+        self._by_physical_root = {key: tuple(items) for key, items in by_root.items()}
 
-    def candidates_for(self, fund_well: FundWell) -> tuple[GdiRecord, ...]:
+    def candidates_for(
+        self,
+        fund_well: FundWell,
+        histories: tuple[WellHistory, ...] = (),
+    ) -> tuple[GdiRecord, ...]:
         """Return field-qualified records relevant on the fund date."""
 
-        if fund_well.base_well_id is None:
+        target_id = (
+            fund_well.target_well_id or normalize_well_id(fund_well.raw_display).target_well_id
+        )
+        if target_id is None:
             return ()
-        cutoff = datetime.combine(fund_well.fund_date, time.max)
-        return tuple(
+        cutoff_day = self._calculation_date or fund_well.fund_date
+        cutoff = datetime.combine(cutoff_day, time.max)
+        exact = tuple(
             record
-            for record in self._by_base_well.get(fund_well.base_well_id, ())
+            for record in self._by_target_identity.get(target_id, ())
             if record.normalized_field == fund_well.normalized_field
             and record.study_date is not None
             and record.study_date <= cutoff
         )
+        if target_id != fund_well.base_well_id:
+            return exact
+
+        lineage = tuple(
+            record
+            for record in self._by_physical_root.get(fund_well.base_well_id or "", ())
+            if record.normalized_field == fund_well.normalized_field
+            and record.study_date is not None
+            and record.study_date <= cutoff
+        )
+        if fund_well.object_plast_hint is not None:
+            hinted = tuple(
+                record
+                for record in lineage
+                if record.normalized_plast == fund_well.object_plast_hint
+            )
+            if hinted:
+                lineage = hinted
+        lineage = _latest_by_identity_and_plast(lineage)
+        exact_lineage = tuple(record for record in lineage if record.target_well_id == target_id)
+        accepted_exact = tuple(
+            record
+            for record in exact_lineage
+            if not (
+                (resolution := resolve_lifecycle_stage(fund_well, record, histories)).issue
+                is not None
+                and resolution.stage is None
+            )
+        )
+        resolved_suffixes = tuple(
+            record
+            for record in lineage
+            if record.target_well_id != target_id
+            and resolve_lifecycle_stage(fund_well, record, histories).stage is not None
+        )
+        return tuple(dict.fromkeys((*accepted_exact, *resolved_suffixes)))
+
+    def lineage_candidates_for(self, fund_well: FundWell) -> tuple[GdiRecord, ...]:
+        """Return root-related candidates for a provenance-rich ambiguity."""
+
+        if fund_well.base_well_id is None:
+            return ()
+        cutoff_day = self._calculation_date or fund_well.fund_date
+        cutoff = datetime.combine(cutoff_day, time.max)
+        lineage = tuple(
+            record
+            for record in self._by_physical_root.get(fund_well.base_well_id, ())
+            if record.normalized_field == fund_well.normalized_field
+            and record.study_date is not None
+            and record.study_date <= cutoff
+        )
+        if fund_well.object_plast_hint is not None:
+            hinted = tuple(
+                record
+                for record in lineage
+                if record.normalized_plast == fund_well.object_plast_hint
+            )
+            if hinted:
+                lineage = hinted
+        return _latest_by_identity_and_plast(lineage)
 
 
-def match_fund_well(fund_well: FundWell, gdi_index: GdiIndex) -> MatchResult:
+def _latest_by_identity_and_plast(records: tuple[GdiRecord, ...]) -> tuple[GdiRecord, ...]:
+    """Keep the newest date per source identity/plast before lineage checks."""
+
+    groups: defaultdict[tuple[str | None, str | None], list[GdiRecord]] = defaultdict(list)
+    for record in records:
+        groups[(record.target_well_id, record.normalized_plast)].append(record)
+    latest_records: list[GdiRecord] = []
+    for grouped in groups.values():
+        latest_date = max(record.study_date for record in grouped if record.study_date is not None)
+        latest_records.extend(record for record in grouped if record.study_date == latest_date)
+    return tuple(latest_records)
+
+
+def match_fund_well(
+    fund_well: FundWell,
+    gdi_index: GdiIndex,
+    histories: tuple[WellHistory, ...] = (),
+) -> MatchResult:
     """Resolve one fund well without choosing among equal latest candidates."""
 
     if fund_well.base_well_id is None:
@@ -55,8 +159,28 @@ def match_fund_well(fund_well: FundWell, gdi_index: GdiIndex) -> MatchResult:
             fund_well=fund_well,
             explanation="Номер скважины фонда не удалось нормализовать.",
         )
-    candidates = gdi_index.candidates_for(fund_well)
+    candidates = gdi_index.candidates_for(fund_well, histories)
     if not candidates:
+        lineage = gdi_index.lineage_candidates_for(fund_well)
+        unresolved_variants = tuple(
+            record
+            for record in lineage
+            if record.target_well_id != fund_well.target_well_id
+            or (
+                histories
+                and resolve_lifecycle_stage(fund_well, record, histories).issue is not None
+            )
+        )
+        if unresolved_variants:
+            return MatchResult(
+                status=MatchStatus.AMBIGUOUS,
+                fund_well=fund_well,
+                candidates=unresolved_variants,
+                explanation=(
+                    "Найдено обозначение с тем же физическим корнем, но его жизненный цикл "
+                    "не удалось однозначно связать с текущей записью фонда."
+                ),
+            )
         return MatchResult(
             status=MatchStatus.NO_GDI,
             fund_well=fund_well,
@@ -76,7 +200,12 @@ def match_fund_well(fund_well: FundWell, gdi_index: GdiIndex) -> MatchResult:
     latest = tuple(record for record in candidates if record.study_date == latest_date)
     distinct: dict[tuple[str | None, str | None, str | None], GdiRecord] = {}
     for record in latest:
-        distinct.setdefault(record.completion_key, record)
+        target_id = record.target_well_id or (
+            normalize_well_id(record.raw_well_name).target_well_id
+            if record.raw_well_name is not None
+            else None
+        )
+        distinct.setdefault((target_id, record.normalized_plast, record.normalized_field), record)
     distinct_records = tuple(distinct.values())
     if len(distinct_records) != 1:
         candidate_text = "; ".join(
@@ -103,15 +232,23 @@ def match_fund_well(fund_well: FundWell, gdi_index: GdiIndex) -> MatchResult:
 def match_all(
     fund_wells: Iterable[FundWell],
     gdi_index: GdiIndex,
+    histories: tuple[WellHistory, ...] = (),
 ) -> tuple[tuple[MatchResult, ...], tuple[DiagnosticIssue, ...]]:
     """Match the full fund and emit concise diagnostics for non-matches."""
 
     results: list[MatchResult] = []
     issues: list[DiagnosticIssue] = []
     for fund_well in fund_wells:
-        result = match_fund_well(fund_well, gdi_index)
+        result = match_fund_well(fund_well, gdi_index, histories)
         results.append(result)
         if result.status is MatchStatus.AMBIGUOUS:
+            lifecycle_issues = tuple(
+                resolution.issue
+                for record in result.candidates
+                if (resolution := resolve_lifecycle_stage(fund_well, record, histories)).issue
+                is not None
+            )
+            issues.extend(lifecycle_issues)
             issues.append(
                 DiagnosticIssue(
                     code="GDI_AMBIGUOUS_MATCH",

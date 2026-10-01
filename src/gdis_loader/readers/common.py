@@ -13,7 +13,7 @@ from datetime import date, datetime, time
 from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
-from gdis_loader.domain.models import SourceLocation
+from gdis_loader.domain.models import CellValue, SourceLocation
 
 _SPACE_RE = re.compile(r"\s+")
 OPENPYXL_CONDITIONAL_FORMATTING_WARNING = (
@@ -136,6 +136,14 @@ def as_text(value: object) -> str | None:
         return None
     text = clean_text(value)
     return text or None
+
+
+def as_cell_value(value: object) -> CellValue:
+    """Keep supported raw Excel values typed and stringify uncommon objects."""
+
+    if value is None or isinstance(value, (str, int, float, bool, date, datetime)):
+        return value
+    return str(value)
 
 
 def parse_datetime(value: object) -> datetime | None:
