@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
+from xml.etree import ElementTree
 from zipfile import ZipFile
 
 import pytest
@@ -85,7 +87,7 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdm_fallback_selected == 11
     assert result.report.gdm_stale_fallback_rejected == 16
     assert result.report.gdm_target_candidate_rows == 54
-    assert result.report.criteria_snapshot["values"] == {
+    expected_criteria = {
         "insufficient_gdi_min_count": 2,
         "productivity_min_increase": 0.0,
         "chlorine_current_min_mg_dm3": 2000.0,
@@ -94,6 +96,12 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         "gdm_abs_delta_threshold": 5.0,
         "gdm_fallback_max_age_days": 365,
         "gas_rate_working_day_min_rate": 0.0,
+    }
+    assert result.report.criteria_snapshot == {
+        "config_source": None,
+        "values": expected_criteria,
+        "defaults": expected_criteria,
+        "value_origin": {key: "default" for key in expected_criteria},
     }
     assert result.report.well_history_records > 0
     assert result.report.well_history_gtm_events > 0
@@ -119,7 +127,10 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         for issue in result.report.issues
     )
     assert output.is_file()
-    assert output.with_suffix(".load-report.json").is_file()
+    report_path = output.with_suffix(".load-report.json")
+    assert report_path.is_file()
+    serialized_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert serialized_report["criteria_snapshot"] == result.report.criteria_snapshot
     workbook = load_workbook(output, read_only=True, data_only=True, keep_links=False)
     try:
         worksheet = workbook["Данные"]
@@ -132,6 +143,7 @@ def test_real_bundle_update(tmp_path: Path) -> None:
             for row in worksheet.iter_rows(min_row=7, values_only=True)
             if row[well_index] is not None
         }
+        assert len(rows_by_well) == 78
         expected_counts = {"12": 20, "13": 21, "21": 19, "22": 19}
         for well, expected_count in expected_counts.items():
             assert rows_by_well[well][count_index] == expected_count
@@ -149,14 +161,28 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert f'sqref="A7:A{table_end}"' in sheet_xml
     assert 'mc:Ignorable="x14ac"' in sheet_xml
     assert "xmlns:x14ac=" in sheet_xml
+    sheet_root = ElementTree.fromstring(sheet_xml)
+    sheet_data = sheet_root.find(
+        "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheetData"
+    )
+    assert sheet_data is not None
+    row_numbers = [int(row.attrib["r"]) for row in sheet_data]
+    assert max(row_numbers) == table_end
 
     with ZipFile(REAL_FILES[0]) as source_archive, ZipFile(output) as output_archive:
+        assert set(source_archive.namelist()) == set(output_archive.namelist())
         changed_entries = {
             name
             for name in source_archive.namelist()
             if source_archive.read(name) != output_archive.read(name)
         }
+        non_target_entries_identical = all(
+            source_archive.read(name) == output_archive.read(name)
+            for name in source_archive.namelist()
+            if name not in {"xl/worksheets/sheet3.xml", "xl/tables/table2.xml"}
+        )
     assert changed_entries == {"xl/worksheets/sheet3.xml", "xl/tables/table2.xml"}
+    assert non_target_entries_identical
 
 
 @pytest.mark.skipif(

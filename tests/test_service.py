@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 from datetime import date, datetime
@@ -37,6 +38,8 @@ from gdis_loader.service import (
     ServiceResult,
     _append_issues,
     _build_target_rows,
+    _effective_target_identity,
+    _source_lookup_identity,
     default_output_path,
     run_validate,
 )
@@ -251,6 +254,46 @@ def test_update_keeps_explicit_output_path_without_field_suffix(
 
     assert result.output_path == explicit
     assert result.report.output_path == str(explicit.resolve())
+
+
+def test_json_report_preserves_explicit_criteria_snapshot(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    _stub_empty_update(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "write_target_rows",
+        lambda _source, output, _rows: TargetWriteResult(output, 0),
+    )
+    criteria = CriteriaConfig(
+        insufficient_gdi_min_count=3,
+        productivity_min_increase=0.25,
+        chlorine_current_min_mg_dm3=2100.0,
+        chlorine_delta_min_mg_dm3=1100.0,
+        downhole_depth_threshold_m=50.0,
+        gdm_abs_delta_threshold=7.0,
+        gdm_fallback_max_age_days=30,
+        gas_rate_working_day_min_rate=10.0,
+    )
+    criteria_fields = frozenset(criteria.as_dict())
+    config_source = tmp_path / "config.toml"
+
+    result = service.run_update(
+        _paths(tmp_path),
+        target_field="Пырейное",
+        criteria_config=criteria,
+        config_source=config_source,
+        criteria_explicit_fields=criteria_fields,
+    )
+
+    expected_snapshot = {
+        "config_source": str(config_source),
+        "values": criteria.as_dict(),
+        "defaults": CriteriaConfig().as_dict(),
+        "value_origin": {name: "config" for name in criteria.as_dict()},
+    }
+    assert result.report.criteria_snapshot == expected_snapshot
+    report_path = Path(result.report.diagnostic_path or "")
+    serialized_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert serialized_report["criteria_snapshot"] == expected_snapshot
 
 
 def test_service_result_exposes_errors_and_capacity_warning() -> None:
@@ -539,11 +582,113 @@ def test_no_gdi_with_day_launch_writes_zero_count_and_duration_with_provenance()
     assert rows[0].specific_gdi_count is None
     assert report.gdi_count_filled == 1
     assert report.insufficient_gdi_yes == 1
-    assert any(issue.code == "GDI_SPECIFIC_RATE_ZERO_COUNT" for issue in report.issues)
+    zero_count_issue = next(
+        issue for issue in report.issues if issue.code == "GDI_SPECIFIC_RATE_ZERO_COUNT"
+    )
+    assert "μi должен быть 0" in zero_count_issue.message
+    assert "должен быть исключён из итогового λ" in zero_count_issue.message
+    assert "пока не обеспечивают это поведение полностью" in zero_count_issue.message
+    assert "критерий не участвует" not in zero_count_issue.message
     count_provenance = next(
         item for item in report.field_provenance if item["field"] == "Количество ГДИ"
     )
     assert count_provenance["locations"] == [SourceLocation("history.xlsx", "БЛУ", "C3").to_dict()]
+
+
+@pytest.mark.parametrize(
+    ("kind", "source_identity"),
+    (
+        (WellEventKind.PVLG, "54_ПВЛГ"),
+        (WellEventKind.PNLG, "54_ПНЛГ"),
+        (WellEventKind.PVLG, "54"),
+    ),
+)
+def test_pvlg_and_pnlg_target_identity_uses_physical_root(
+    kind: WellEventKind, source_identity: str
+) -> None:
+    normalized = normalize_well_id(source_identity)
+    fund_well = replace(
+        _fund_identity("Береговое", raw_well=source_identity, base_well_id="54"),
+        target_well_id=normalized.target_well_id,
+    )
+    record = _gdi_identity(
+        "Береговое", raw_well=source_identity, base_well_id="54", raw_plast="ПК2"
+    )
+    stage = WellStage(
+        field_name="Береговое",
+        physical_root="54",
+        source_display_well="054",
+        target_well_id=(
+            source_identity
+            if kind in {WellEventKind.PVLG, WellEventKind.PNLG} and source_identity != "54"
+            else None
+        ),
+        plast="ПК2",
+        event_kind=kind,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "I4"),
+        raw_block=(),
+    )
+
+    assert _effective_target_identity(fund_well, record, stage) == "54"
+    assert _source_lookup_identity(fund_well, record, stage) == (
+        source_identity if source_identity != "54" else "54"
+    )
+
+
+def test_zbs_target_suffix_and_gs_mzs_identities_are_unchanged() -> None:
+    fund_well = _fund_identity("Береговое", raw_well="54", base_well_id="54")
+    zbs = WellStage(
+        field_name="Береговое",
+        physical_root="54",
+        source_display_well="054",
+        target_well_id="54_ЗБС2",
+        plast="ПК2",
+        event_kind=WellEventKind.ZBS,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=2,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "I4"),
+        raw_block=(),
+    )
+    assert _effective_target_identity(fund_well, None, zbs) == "54_ЗБС2"
+
+    for identity in ("54_ГС", "54_МЗС"):
+        normalized = normalize_well_id(identity)
+        fund_variant = replace(
+            _fund_identity("Береговое", raw_well=identity, base_well_id="54"),
+            target_well_id=normalized.target_well_id,
+        )
+        record = _gdi_identity("Береговое", raw_well=identity, base_well_id="54")
+        assert _effective_target_identity(fund_variant, record, None) == identity
+
+
+def test_pvlg_without_gdi_uses_root_for_target_and_suffix_for_lookup() -> None:
+    fund_well = replace(
+        _fund_identity("Береговое", raw_well="54_ПВЛГ", base_well_id="54"),
+        target_well_id="54_ПВЛГ",
+        object_plast_hint="ПК2",
+    )
+    history = _history_stage(PartialDate(2023, 6, 1, DatePrecision.DAY), kind=WellEventKind.PVLG)
+    stage = replace(
+        history.stages[0],
+        physical_root="54",
+        source_display_well="054",
+        plast="ПК2",
+    )
+    history = replace(history, physical_root="54", source_display_well="054", stages=(stage,))
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex(()),
+        LhaIndex(()),
+        report,
+        (history,),
+    )
+
+    assert rows[0].well == "54"
+    assert _source_lookup_identity(fund_well, None, stage) == "54_ПВЛГ"
 
 
 def test_no_gdi_with_month_launch_uses_first_day_and_duration() -> None:

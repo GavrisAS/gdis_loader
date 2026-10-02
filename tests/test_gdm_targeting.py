@@ -14,7 +14,11 @@ from gdis_loader.domain.models import (
     WellStage,
 )
 from gdis_loader.matching.normalize import normalize_field_name, normalize_well_id
-from gdis_loader.service import _status_candidates_for_target
+from gdis_loader.service import (
+    _effective_target_identity,
+    _source_lookup_identity,
+    _status_candidates_for_target,
+)
 from gdis_loader.transforms.research_status import select_gdm_delta
 
 
@@ -99,3 +103,42 @@ def test_gdm_uses_current_lifecycle_and_plast_but_all_research_types() -> None:
     result = select_gdm_delta(selected, fallback_max_age_days=365)
     assert result.record == current_other_type
     assert result.record.research_type == "Освоение"
+
+
+def test_pvlg_source_suffix_keeps_gdm_lookup_on_pvlg_history() -> None:
+    initial = _stage(WellEventKind.INITIAL, "22", date(2020, 1, 1), 3, "ПК1")
+    pvlg = _stage(WellEventKind.PVLG, "22_ПВЛГ", date(2023, 6, 1), 4, "ПК2")
+    pnlg = _stage(WellEventKind.PNLG, "22_ПНЛГ", date(2025, 1, 1), 5, "ПК2")
+    history = WellHistory("Береговое", "22", "022", (), (initial, pvlg, pnlg))
+    fund_well = FundWell(
+        raw_display="22_ПВЛГ",
+        base_well_id="22",
+        target_well_id="22_ПВЛГ",
+        field_name="Береговое",
+        normalized_field=normalize_field_name("Береговое"),
+        object_name="Береговое (ПК2)",
+        source_category=FundCategory.PRODUCING,
+        fund_date=date(2026, 8, 1),
+        source_row=7,
+        source_column="C",
+        object_plast_hint="ПК2",
+    )
+    display_identity = _effective_target_identity(fund_well, None, pvlg)
+    lookup_identity = _source_lookup_identity(fund_well, None, pvlg)
+    pvlg_status = _status("22_ПВЛГ", "ПК2", "ИД", date(2024, 1, 1), 6.0, 10)
+    root_only_status = _status("22", "ПК2", "Освоение", date(2024, 2, 1), 7.0, 11)
+    later_history_status = _status("22_ПВЛГ", "ПК2", "ИД", date(2025, 7, 1), 100.0, 12)
+
+    selected, issues = _status_candidates_for_target(
+        fund_well,
+        lookup_identity or "",
+        "ПК2",
+        pvlg,
+        (pvlg_status, root_only_status, later_history_status),
+        (history,),
+    )
+
+    assert display_identity == "22"
+    assert lookup_identity == "22_ПВЛГ"
+    assert selected == (pvlg_status, root_only_status)
+    assert not issues

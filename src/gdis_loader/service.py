@@ -74,6 +74,11 @@ from gdis_loader.validation.sources import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_GDI_ZERO_COUNT_DIAGNOSTIC = (
+    "По подтверждённому бизнес-правилу μi должен быть 0, а критерий должен быть "
+    "исключён из итогового λ. Текущие формулы калькулятора пока не обеспечивают "
+    "это поведение полностью; требуется отдельная structural migration."
+)
 
 
 def _gdm_delta_is_missing(value: object) -> bool:
@@ -468,6 +473,8 @@ def _effective_target_identity(
     fund_well: FundWell, record: GdiRecord | None, stage: WellStage | None
 ) -> str | None:
     if stage is not None:
+        if stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
+            return stage.physical_root
         if stage.target_well_id:
             return stage.target_well_id
         if stage.event_kind is WellEventKind.INITIAL:
@@ -478,16 +485,22 @@ def _effective_target_identity(
             )
         if stage.event_kind is WellEventKind.ZBS:
             return f"{stage.physical_root}_ЗБС"
-        if stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
-            source_identity = (
-                record.target_well_id if record is not None else fund_well.target_well_id
-            )
-            if source_identity and source_identity != stage.physical_root:
-                return source_identity
-            return stage.physical_root
     if record is not None:
         return record.target_well_id or record.raw_well_name
     return fund_well.target_well_id or fund_well.raw_display
+
+
+def _source_lookup_identity(
+    fund_well: FundWell, record: GdiRecord | None, stage: WellStage | None
+) -> str | None:
+    """Keep a PVLG/PNLG source suffix for stage-aware source selection."""
+
+    if stage is not None and stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
+        source_identity = record.target_well_id if record is not None else fund_well.target_well_id
+        if source_identity and source_identity != stage.physical_root:
+            return source_identity
+        return stage.physical_root
+    return _effective_target_identity(fund_well, record, stage)
 
 
 def _gdi_history_for_target(
@@ -852,6 +865,9 @@ def _build_target_rows(
                 or record.raw_well_name
                 or fund_well.raw_display
             )
+            source_identity = (
+                _source_lookup_identity(fund_well, record, lifecycle.stage) or effective_identity
+            )
             if (
                 record.target_well_id == fund_well.base_well_id
                 and lifecycle.stage is not None
@@ -996,7 +1012,7 @@ def _build_target_rows(
                                 severity=IssueSeverity.INFO,
                                 message=(
                                     "Количество ГДИ равно нулю; удельное количество оставлено "
-                                    "пустым, μi=0 не включает критерий в итоговый коэффициент."
+                                    "пустым. " + _GDI_ZERO_COUNT_DIAGNOSTIC
                                 ),
                                 source="gdi",
                                 well_id=fund_well.base_well_id,
@@ -1129,7 +1145,7 @@ def _build_target_rows(
                         calculation_date or report.calculation_date or fund_well.fund_date,
                         time.max,
                     ),
-                    target_well_id=effective_identity,
+                    target_well_id=source_identity,
                     physical_root=fund_well.base_well_id,
                     histories=histories,
                     lifecycle_stage=lifecycle.stage,
@@ -1368,7 +1384,7 @@ def _build_target_rows(
 
             gdm_candidates, gdm_match_issues = _status_candidates_for_target(
                 fund_well,
-                effective_identity,
+                source_identity,
                 record.normalized_plast,
                 lifecycle.stage,
                 research_status,
@@ -1382,7 +1398,7 @@ def _build_target_rows(
                 and gdm_problem(item.delta_value, criteria.gdm_abs_delta_threshold)
             )
             if gdm_candidates:
-                report.gdm_rows_per_target[effective_identity] = len(gdm_candidates)
+                report.gdm_rows_per_target[source_identity] = len(gdm_candidates)
             report.gdm_target_candidate_rows += len(problem_candidates)
             gdm_selection = select_gdm_delta(gdm_candidates, criteria.gdm_fallback_max_age_days)
             gdm_value: str | None = None
@@ -1458,7 +1474,7 @@ def _build_target_rows(
 
             daily_item, daily_issue = _daily_record_for_target(
                 fund_well,
-                effective_identity,
+                source_identity,
                 fund.wells,
                 daily_rows,
             )
@@ -1763,7 +1779,7 @@ def _build_target_rows(
                             severity=IssueSeverity.INFO,
                             message=(
                                 "Количество ГДИ равно нулю; удельное количество оставлено пустым, "
-                                "μi=0; критерий не участвует в итоговом коэффициенте λ."
+                                + _GDI_ZERO_COUNT_DIAGNOSTIC
                             ),
                             source="gdi",
                             well_id=fund_well.base_well_id,
@@ -1787,11 +1803,12 @@ def _build_target_rows(
                         calculation_date=operation_date.isoformat(),
                     )
         target_identity = _effective_target_identity(fund_well, None, lifecycle.stage)
+        source_identity = _source_lookup_identity(fund_well, None, lifecycle.stage)
         gdm_value: str | None = None
         if match.status is MatchStatus.NO_GDI and lifecycle.stage is not None:
             gdm_candidates, gdm_issues = _status_candidates_for_target(
                 fund_well,
-                target_identity or fund_well.target_well_id or fund_well.raw_display,
+                source_identity or target_identity or fund_well.raw_display,
                 lifecycle.stage.plast,
                 lifecycle.stage,
                 research_status,
@@ -1799,9 +1816,9 @@ def _build_target_rows(
             )
             _append_issues(report, gdm_issues)
             if gdm_candidates:
-                report.gdm_rows_per_target[target_identity or fund_well.raw_display] = len(
-                    gdm_candidates
-                )
+                report.gdm_rows_per_target[
+                    source_identity or target_identity or fund_well.raw_display
+                ] = len(gdm_candidates)
             selection = select_gdm_delta(gdm_candidates, criteria.gdm_fallback_max_age_days)
             if selection.record is not None:
                 assert selection.record.delta_value is not None
@@ -1851,7 +1868,7 @@ def _build_target_rows(
         if match.status is MatchStatus.NO_GDI:
             daily_item, daily_issue = _daily_record_for_target(
                 fund_well,
-                target_identity or fund_well.target_well_id or fund_well.raw_display,
+                source_identity or target_identity or fund_well.raw_display,
                 fund.wells,
                 daily_rows,
             )
@@ -1892,7 +1909,12 @@ def _build_target_rows(
                 report.debit_blank += 1
         target_rows.append(
             TargetRow(
-                well=fund_well.target_well_id or fund_well.raw_display,
+                well=(
+                    target_identity
+                    if lifecycle.stage is not None
+                    and lifecycle.stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}
+                    else fund_well.target_well_id or fund_well.raw_display
+                ),
                 plast=lifecycle.stage.plast if lifecycle.stage is not None else None,
                 state=state,
                 launch_date=launch_date,

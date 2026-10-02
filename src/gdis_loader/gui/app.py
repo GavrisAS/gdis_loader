@@ -444,12 +444,11 @@ class LoaderWindow(QMainWindow):
         self._field_combo.clear()
         self._field_combo.setCurrentIndex(-1)
         self._field_combo.blockSignals(False)
-        self._field_combo.setEnabled(False)
-        self._update_button.setEnabled(False)
 
     def _invalidate_validation(self) -> None:
         self._validation_fingerprint = None
         self._clear_available_fields()
+        self._recompute_ui_state()
 
     def _input_path_changed(self, _text: str) -> None:
         if (
@@ -467,7 +466,7 @@ class LoaderWindow(QMainWindow):
             and self._source_fingerprint() == self._validation_fingerprint
             and field_name in self._available_fields
         )
-        self._update_button.setEnabled(valid and not self._busy)
+        self._recompute_ui_state()
         if valid:
             self._set_status(
                 f"Обнаружено месторождений: {len(self._available_fields)}\nВыбрано: {field_name}"
@@ -506,31 +505,37 @@ class LoaderWindow(QMainWindow):
             self._criteria_config = previous
             self._criteria_explicit_fields = previous_explicit
             self._criteria_invalid = previous_invalid
+            self._recompute_ui_state()
             return
+        self._recompute_ui_state()
         self._set_status("Критерии сохранены. Они будут применены при следующем обновлении.")
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self._recompute_ui_state()
+
+    def _recompute_ui_state(self) -> None:
+        """Derive action availability from validation, criteria, selection, and busy state."""
+
         for button in self._browse_buttons:
-            button.setEnabled(not busy)
+            button.setEnabled(not self._busy)
         for field in self._fields.values():
-            field.setEnabled(not busy)
-        self._validate_button.setEnabled(not busy)
-        self._criteria_button.setEnabled(not busy)
-        if busy:
-            self._field_combo.setEnabled(False)
-            self._update_button.setEnabled(False)
-            return
+            field.setEnabled(not self._busy)
+        self._validate_button.setEnabled(not self._busy)
+        self._criteria_button.setEnabled(not self._busy)
         validation_current = (
             self._validation_fingerprint is not None
             and self._source_fingerprint() == self._validation_fingerprint
         )
+        selected_field = self._field_combo.currentText()
+        selected_field_valid = bool(selected_field) and selected_field in self._available_fields
+        if self._busy:
+            self._field_combo.setEnabled(False)
+            self._update_button.setEnabled(False)
+            return
         self._field_combo.setEnabled(validation_current and bool(self._available_fields))
         self._update_button.setEnabled(
-            validation_current
-            and not self._criteria_invalid
-            and bool(self._field_combo.currentText())
-            and self._field_combo.currentText() in self._available_fields
+            validation_current and not self._criteria_invalid and selected_field_valid
         )
 
     def _set_status(self, message: str) -> None:
@@ -612,8 +617,7 @@ class LoaderWindow(QMainWindow):
                 self._field_combo.addItems(list(self._available_fields))
                 self._field_combo.setCurrentIndex(-1)
                 self._field_combo.blockSignals(False)
-                self._field_combo.setEnabled(bool(self._available_fields))
-                self._update_button.setEnabled(False)
+        self._recompute_ui_state()
         self._set_status(result.summary())
         if self._operation_kind == "validate" and not result.has_errors:
             if self._available_fields:

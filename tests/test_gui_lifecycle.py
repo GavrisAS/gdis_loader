@@ -313,6 +313,107 @@ def test_invalid_config_criteria_keeps_paths_and_blocks_update_until_repaired(
     window.close()
 
 
+def test_invalid_criteria_can_be_fixed_and_saved_without_revalidation(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    class _MessageBox:
+        @staticmethod
+        def critical(*_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(gui_app, "QMessageBox", _MessageBox)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[criteria.gdm]\nabs_delta_threshold = -1\n", encoding="utf-8")
+    monkeypatch.setattr(gui_app, "config_path", lambda: config_file)
+    window = gui_app.LoaderWindow()
+    window._available_fields = ("Береговое",)
+    window._field_combo.addItem("Береговое")
+    window._field_combo.setCurrentIndex(0)
+    window._validation_fingerprint = window._source_fingerprint()
+    current_fields = window._available_fields
+    current_fingerprint = window._validation_fingerprint
+    window._field_selected("Береговое")
+
+    assert window._criteria_invalid
+    assert not window._update_button.isEnabled()
+
+    class _AcceptedDialog:
+        criteria = CriteriaConfig(gdm_abs_delta_threshold=7.0)
+
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(gui_app.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(gui_app, "CriteriaDialog", _AcceptedDialog)
+    window._edit_criteria()
+
+    assert not window._criteria_invalid
+    assert window._available_fields == current_fields
+    assert window._validation_fingerprint == current_fingerprint
+    assert window._field_combo.currentText() == "Береговое"
+    assert window._update_button.isEnabled()
+    assert load_config(config_file).config.criteria.gdm_abs_delta_threshold == 7.0
+    window.close()
+
+
+@pytest.mark.parametrize("save_result", ["cancel", "invalid"])
+def test_cancel_or_invalid_criteria_save_keeps_update_disabled(
+    monkeypatch, tmp_path: Path, save_result: str
+) -> None:  # type: ignore[no-untyped-def]
+    class _MessageBox:
+        @staticmethod
+        def critical(*_args: object) -> None:
+            return None
+
+        @staticmethod
+        def warning(*_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(gui_app, "QMessageBox", _MessageBox)
+    config_file = tmp_path / "config.toml"
+    original = "[criteria.gdm]\nabs_delta_threshold = -1\n"
+    config_file.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(gui_app, "config_path", lambda: config_file)
+    window = gui_app.LoaderWindow()
+    window._available_fields = ("Береговое",)
+    window._field_combo.addItem("Береговое")
+    window._field_combo.setCurrentIndex(0)
+    window._validation_fingerprint = window._source_fingerprint()
+    window._field_selected("Береговое")
+
+    if save_result == "cancel":
+
+        class _RejectedDialog:
+            criteria = CriteriaConfig()
+
+            def __init__(self, *_args: object) -> None:
+                pass
+
+            def exec(self) -> int:
+                return int(gui_app.QDialog.DialogCode.Rejected)
+
+        monkeypatch.setattr(gui_app, "CriteriaDialog", _RejectedDialog)
+    else:
+
+        class _InvalidSaveDialog(gui_app.CriteriaDialog):
+            def exec(self) -> int:
+                item = self.table.item(0, 3)
+                assert item is not None
+                item.setText("0")
+                self._save()
+                return self.result()
+
+        monkeypatch.setattr(gui_app, "CriteriaDialog", _InvalidSaveDialog)
+    window._edit_criteria()
+
+    assert window._criteria_invalid
+    assert not window._update_button.isEnabled()
+    assert config_file.read_text(encoding="utf-8") == original
+    window.close()
+
+
 def test_criteria_dialog_is_modal_loads_values_and_only_edits_value_column() -> None:
     dialog = gui_app.CriteriaDialog(
         CriteriaConfig(chlorine_current_min_mg_dm3=2500.0, gdm_fallback_max_age_days=30)

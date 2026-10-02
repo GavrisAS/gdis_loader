@@ -24,6 +24,7 @@ from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.well_history import read_well_history
 from gdis_loader.transforms.gdi import collapse_exact_gdi_duplicates
+from gdis_loader.validation.reconciliation import application_count_state
 
 _VALID_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
 _CUSTOMER_WELLS = frozenset({"12", "13", "21", "22"})
@@ -181,7 +182,8 @@ def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dic
         application_count = application.get(
             stage.target_well_id or well.target_well_id or well.raw_display
         )
-        if application and application_count != deduplicated_after:
+        application_state = application_count_state(application_count, deduplicated_after)
+        if application_state == "mismatch":
             metrics["application_count_mismatches"] += 1
 
         if well.base_well_id in _CUSTOMER_WELLS:
@@ -205,7 +207,10 @@ def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dic
                 ),
                 "excluded_by_lifecycle_or_plast": excluded,
                 "calculator_count": application_count,
-                "count_matches_calculator": application_count == deduplicated_after,
+                "calculator_count_state": application_state,
+                "count_matches_calculator": (
+                    None if application_state == "missing" else application_state == "match"
+                ),
             }
 
     return {

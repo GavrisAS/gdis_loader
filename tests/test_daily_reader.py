@@ -26,3 +26,7 @@ def test_daily_reader_keeps_valid_values_and_ignores_ref(tmp_path: Path) -> None
     assert any(issue.code == "DAILY_INVALID_VALUE" for issue in issues)
     assert all(issue.severity is not IssueSeverity.WARNING for issue in issues)
     assert any("заметка источника" in issue.message for issue in issues)
+    message = next(issue.message for issue in issues if issue.code == "DAILY_INVALID_VALUE")
+    assert "участвуют в расчёте среднего Дебита" in message
+    assert "строго выше порога" in message
+    assert "пока не участвуют" not in message

@@ -18,6 +18,7 @@ from gdis_loader.domain.models import (
 )
 from gdis_loader.matching.lifecycle import assign_stage_by_date, resolve_lifecycle_stage
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
+from gdis_loader.service import _effective_target_identity
 
 
 def _fund(identity: str, plast: str = "ПК1") -> FundWell:
@@ -119,6 +120,21 @@ def test_zbs_and_pvlg_resolve_to_distinct_launch_stages() -> None:
     assert pvlg.stage is not None
     assert pvlg.stage.event_kind is WellEventKind.PVLG
     assert pvlg.stage.started_at == PartialDate(2023, 6, 1, DatePrecision.DAY)
+
+
+def test_pvlg_keeps_separate_history_with_same_display_well_number() -> None:
+    fund = _fund("051", "ПК1")
+    history = (_history(),)
+    before_pvlg = resolve_lifecycle_stage(fund, _record("51", datetime(2015, 5, 1), "ПК1"), history)
+    after_pvlg_record = _record("51_ПВЛГ", datetime(2024, 5, 1), "ПК2")
+    after_pvlg = resolve_lifecycle_stage(fund, after_pvlg_record, history)
+
+    assert before_pvlg.stage is not None
+    assert before_pvlg.stage.event_kind is WellEventKind.INITIAL
+    assert after_pvlg.stage is not None
+    assert after_pvlg.stage.event_kind is WellEventKind.PVLG
+    assert _effective_target_identity(fund, None, before_pvlg.stage) == "51"
+    assert _effective_target_identity(fund, after_pvlg_record, after_pvlg.stage) == "51"
 
 
 def test_unsuffixed_gdi_after_zbs_maps_by_date_and_exact_plast() -> None:

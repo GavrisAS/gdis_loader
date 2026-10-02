@@ -199,4 +199,5 @@ def test_criteria_save_preserves_other_path_and_setting_sections(tmp_path: Path)
     assert result.fund == "fund.xlsx"
     assert result.last_directory == "custom"
     assert result.preserved_settings["other"] == {"keep": "value"}
-    assert result.criteria.gdm_abs_delta_threshold == 7.0
+    assert result.criteria == CriteriaConfig(gdm_abs_delta_threshold=7.0)
+    assert result.criteria_explicit_fields == frozenset(CriteriaConfig().as_dict())

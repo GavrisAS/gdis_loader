@@ -11,7 +11,7 @@ field. В `Данные` не добавляется колонка местор
 
 | Поле `Данные` | Статус | Источник / правило |
 |---|---|---|
-| Скважина | заполняется | Current lifecycle display identity; unresolved match — blank. |
+| Скважина | заполняется | Current lifecycle display identity; PVLG/PNLG use `physical_root` without source suffix while retaining separate histories; unresolved match — blank. |
 | Пласт | заполняется | Current normalized primary plast/composite; source raw сохранён в provenance. |
 | Состояние | заполняется | Eligible fund category, normalized to `Дающие газ` or `Остановленные в отчетном периоде`. |
 | Дата запуска | условно | DAY unchanged; MONTH → first of month; YEAR → Jan 1. Effective date and defaulting provenance both recorded. |
@@ -40,5 +40,7 @@ business meaning for a future formula migration is `μ=0` and exclusion of that
 criterion from final `λ`. The current calculator formula gap is documented in
 [`STRUCTURAL_CALCULATOR_MIGRATION.md`](STRUCTURAL_CALCULATOR_MIGRATION.md).
 
-The full production aggregate, 12/13/21/22 reconciliation, fill counts and OOXML
-checks are recorded in [`REAL_DATA_DELTA_v0.13.md`](REAL_DATA_DELTA_v0.13.md).
+The production v0.14 corrective regression, 12/13/21/22 reconciliation, fill
+counts and OOXML checks are recorded in
+[`REAL_DATA_DELTA_v0.14.md`](REAL_DATA_DELTA_v0.14.md); the original v0.13 run is
+retained in [`REAL_DATA_DELTA_v0.13.md`](REAL_DATA_DELTA_v0.13.md).
