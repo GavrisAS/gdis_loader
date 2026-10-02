@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -564,45 +565,6 @@ def validate_inputs(
             )
             progress(ProgressUpdate(percent, f"Проверка структуры: {label}"))
 
-    if paths.output is not None and paths.output.suffix.casefold() != ".xlsx":
-        issues.append(
-            _path_issue(
-                paths.output, "OUTPUT_EXTENSION", "Путь результата должен иметь расширение .xlsx."
-            )
-        )
-    if paths.output is not None:
-        input_paths = (
-            (paths.calculator, "калькулятором"),
-            (paths.fund, "фондом"),
-            (paths.gdi, "сводной ГДИ"),
-            (paths.lha, "базой ЛХА"),
-            (paths.daily_report, "суточным рапортом"),
-            (paths.well_history, "базой истории скважин"),
-            (paths.research_status, "статусом исследований"),
-        )
-        collision = next(
-            (
-                label
-                for source_path, label in input_paths
-                if paths.output.resolve() == source_path.resolve()
-            ),
-            None,
-        )
-        if collision is not None:
-            issues.append(
-                _path_issue(
-                    paths.output,
-                    "OUTPUT_EQUALS_INPUT",
-                    f"Путь результата совпадает с исходным {collision}; входной файл "
-                    "защищен от перезаписи.",
-                )
-            )
-    if paths.output is not None and not paths.output.parent.exists():
-        issues.append(
-            _path_issue(
-                paths.output.parent, "OUTPUT_DIRECTORY_MISSING", "Каталог результата не существует."
-            )
-        )
     available_fields: tuple[str, ...] = ()
     field_coverage: dict[str, dict[str, int | bool | str | None]] = {}
     if not any(issue.severity is IssueSeverity.ERROR for issue in issues):
@@ -615,3 +577,66 @@ def validate_inputs(
     elif progress is not None:
         progress(ProgressUpdate(schema_end, "Проверка завершена с ошибками структуры"))
     return ValidationResult(tuple(issues), available_fields, field_coverage)
+
+
+def validate_output_path(output: Path, paths: SourcePaths) -> tuple[DiagnosticIssue, ...]:
+    """Validate a result destination immediately before update only."""
+
+    issues: list[DiagnosticIssue] = []
+    if output.suffix.casefold() != ".xlsx":
+        issues.append(
+            _path_issue(
+                output, "OUTPUT_EXTENSION", "Путь результата должен иметь расширение .xlsx."
+            )
+        )
+    input_paths = (
+        (paths.calculator, "калькулятором"),
+        (paths.fund, "фондом"),
+        (paths.gdi, "сводной ГДИ"),
+        (paths.lha, "базой ЛХА"),
+        (paths.daily_report, "суточным рапортом"),
+        (paths.well_history, "базой истории скважин"),
+        (paths.research_status, "статусом исследований"),
+    )
+    collision = next(
+        (
+            label
+            for source_path, label in input_paths
+            if output.resolve(strict=False) == source_path.resolve(strict=False)
+        ),
+        None,
+    )
+    if collision is not None:
+        issues.append(
+            _path_issue(
+                output,
+                "OUTPUT_EQUALS_INPUT",
+                f"Путь результата совпадает с исходным {collision}; "
+                "исходный файл нельзя перезаписать.",
+            )
+        )
+    if not output.parent.is_dir():
+        issues.append(
+            _path_issue(
+                output.parent,
+                "OUTPUT_DIRECTORY_MISSING",
+                "Каталог результата не существует.",
+            )
+        )
+    elif not os.access(output.parent, os.W_OK):
+        issues.append(
+            _path_issue(
+                output.parent,
+                "OUTPUT_DIRECTORY_NOT_WRITABLE",
+                "Нет прав на запись в каталог результата.",
+            )
+        )
+    if output.exists() and output.is_dir():
+        issues.append(
+            _path_issue(output, "OUTPUT_IS_DIRECTORY", "Путь результата указывает на каталог.")
+        )
+    elif output.exists() and not os.access(output, os.W_OK):
+        issues.append(
+            _path_issue(output, "OUTPUT_NOT_WRITABLE", "Нет прав на перезапись файла результата.")
+        )
+    return tuple(issues)

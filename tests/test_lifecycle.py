@@ -132,7 +132,7 @@ def test_unsuffixed_gdi_after_zbs_maps_by_date_and_exact_plast() -> None:
     assert resolution.stage.source_location == SourceLocation("history.xlsx", "БЛУ", "I4")
 
 
-def test_unsuffixed_gdi_same_month_as_boundary_is_ambiguous() -> None:
+def test_unsuffixed_gdi_after_effective_month_boundary_is_assigned() -> None:
     history = _history()
     stage = replace(
         history.stages[1],
@@ -144,22 +144,21 @@ def test_unsuffixed_gdi_same_month_as_boundary_is_ambiguous() -> None:
         _fund("051"), _record("51", datetime(2021, 3, 20), "ПК1"), (modified,)
     )
 
-    assert resolution.stage is None
-    assert resolution.issue is not None
-    assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
+    assert resolution.stage == stage
+    assert resolution.issue is None
 
 
-def test_unsuffixed_gdi_with_unresolved_plast_equivalence_is_not_assigned() -> None:
+def test_plast_sublayer_normalization_allows_exact_primary_plast_match() -> None:
     resolution = resolve_lifecycle_stage(
         _fund("051"), _record("51", datetime(2022, 5, 1), "ПК1-1"), (_history(),)
     )
 
-    assert resolution.stage is None
-    assert resolution.issue is not None
-    assert resolution.issue.code == "UNRESOLVED_PLAST_EQUIVALENCE"
+    assert resolution.stage is not None
+    assert resolution.stage.event_kind is WellEventKind.ZBS
+    assert resolution.issue is None
 
 
-def test_status_partial_date_after_boundary_can_assign_but_boundary_month_cannot() -> None:
+def test_status_partial_dates_use_agreed_effective_first_day() -> None:
     history = _history()
     location = SourceLocation("status.xlsx", "АР_таблица_БЛУ", "D12")
 
@@ -183,9 +182,9 @@ def test_status_partial_date_after_boundary_can_assign_but_boundary_month_cannot
     assert after_boundary.stage is not None
     assert after_boundary.stage.event_kind is WellEventKind.ZBS
     assert after_boundary.issue is None
-    assert boundary_month.stage is None
-    assert boundary_month.issue is not None
-    assert boundary_month.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
+    assert boundary_month.stage is not None
+    assert boundary_month.stage.event_kind is WellEventKind.INITIAL
+    assert boundary_month.issue is None
 
 
 def test_mzs_does_not_inherit_parent_launch_history() -> None:
@@ -197,6 +196,61 @@ def test_mzs_does_not_inherit_parent_launch_history() -> None:
     assert resolution.issue is None
 
 
+def test_gs_and_mzs_only_match_their_own_history_identity() -> None:
+    root_history = _history()
+    branch_stage = replace(
+        root_history.stages[0],
+        target_well_id="51_ГС",
+        source_display_well="051_ГС",
+    )
+    gas_history = WellHistory(
+        root_history.field_name,
+        root_history.physical_root,
+        "051_ГС",
+        root_history.events,
+        (branch_stage,),
+    )
+    mzs_stage = replace(
+        branch_stage,
+        target_well_id="51_МЗС",
+        source_display_well="051_МЗС",
+    )
+    mzs_history = replace(gas_history, source_display_well="051_МЗС", stages=(mzs_stage,))
+
+    gas = resolve_lifecycle_stage(
+        _fund("051_ГС"), _record("51_ГС", datetime(2024, 5, 1)), (root_history, gas_history)
+    )
+    mzs = resolve_lifecycle_stage(
+        _fund("051_МЗС"), _record("51_МЗС", datetime(2024, 5, 1)), (root_history, mzs_history)
+    )
+
+    assert gas.stage == branch_stage
+    assert mzs.stage == mzs_stage
+
+
+def test_pvr_and_klk_do_not_create_lifecycle_boundaries() -> None:
+    history = _history()
+    events = tuple(
+        replace(
+            history.events[0],
+            event_kind=kind,
+            event_label=kind.value,
+            event_date=PartialDate(2022 + index, 1, 1, DatePrecision.DAY),
+        )
+        for index, kind in enumerate((WellEventKind.PVR, WellEventKind.KLK))
+    )
+    modified = replace(history, events=(*history.events, *events))
+
+    pvr = resolve_lifecycle_stage(_fund("051"), _record("51", datetime(2022, 2, 1)), (modified,))
+    klk = resolve_lifecycle_stage(
+        _fund("051", "ПК2"), _record("51", datetime(2024, 2, 1), "ПК2"), (modified,)
+    )
+
+    assert len(modified.stages) == 3
+    assert pvr.stage == history.stages[1]
+    assert klk.stage == history.stages[2]
+
+
 def test_missing_gdi_does_not_assign_base_well_after_lifecycle_boundary() -> None:
     resolution = resolve_lifecycle_stage(_fund("051"), None, (_history(),))
 
@@ -206,7 +260,7 @@ def test_missing_gdi_does_not_assign_base_well_after_lifecycle_boundary() -> Non
     assert SourceLocation("history.xlsx", "БЛУ", "I4") in resolution.issue.locations
 
 
-def test_same_month_stage_boundary_returns_provenance_rich_ambiguity() -> None:
+def test_same_month_stage_boundary_uses_first_day_defaulting() -> None:
     history = _history()
     ambiguous = replace(
         history.stages[1],
@@ -225,14 +279,11 @@ def test_same_month_stage_boundary_returns_provenance_rich_ambiguity() -> None:
         _fund("051_ЗБС"), _record("51_ЗБС", datetime(2023, 6, 15)), (modified,)
     )
 
-    assert resolution.stage is None
-    assert resolution.issue is not None
-    assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
-    assert SourceLocation("gdi.xlsx", "ГДИ", "E10") in resolution.issue.locations
-    assert SourceLocation("history.xlsx", "БЛУ", "O4") in resolution.issue.locations
+    assert resolution.stage == ambiguous
+    assert resolution.issue is None
 
 
-def test_sequential_zbs_names_remain_ambiguous_without_customer_rule() -> None:
+def test_sequential_zbs_names_map_to_deterministic_stage_ordinals() -> None:
     history = _history()
     second_zbs = _stage(
         WellEventKind.ZBS,
@@ -248,25 +299,27 @@ def test_sequential_zbs_names_remain_ambiguous_without_customer_rule() -> None:
         (*history.stages[:2], second_zbs),
     )
 
-    resolution = resolve_lifecycle_stage(
-        _fund("051_ЗБС"), _record("51_ЗБС", datetime(2023, 7, 1)), (modified,)
+    first = resolve_lifecycle_stage(
+        _fund("051_ЗБС"), _record("51_ЗБС", datetime(2021, 9, 1)), (modified,)
+    )
+    second = resolve_lifecycle_stage(
+        _fund("051_ЗБС2"), _record("51_ЗБС2", datetime(2022, 9, 1)), (modified,)
     )
 
-    assert resolution.stage is None
-    assert resolution.issue is not None
-    assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
-    assert SourceLocation("history.xlsx", "БЛУ", "I4") in resolution.issue.locations
-    assert SourceLocation("history.xlsx", "БЛУ", "I6") in resolution.issue.locations
+    assert first.stage == modified.stages[1]
+    assert second.stage == second_zbs
+    assert first.issue is None
+    assert second.issue is None
 
 
-def test_numbered_zbs_identity_is_not_assigned_to_an_event_automatically() -> None:
+def test_numbered_zbs_identity_requires_matching_stage_ordinal() -> None:
     resolution = resolve_lifecycle_stage(
         _fund("051_ЗБС2"), _record("51_ЗБС2", datetime(2024, 5, 1)), (_history(),)
     )
 
     assert resolution.stage is None
     assert resolution.issue is not None
-    assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
+    assert resolution.issue.code == "WELL_HISTORY_STAGE_NOT_FOUND"
     assert SourceLocation("history.xlsx", "БЛУ", "I4") in resolution.issue.locations
 
 

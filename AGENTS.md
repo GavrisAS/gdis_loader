@@ -1,6 +1,6 @@
 # AGENTS.md — gdis_loader
 
-> Current customer decisions for the post-v0.11 iteration are normative and are
+> Current customer decisions for the v0.13 iteration are normative and are
 > summarized in `docs/CUSTOMER_DECISIONS.md`. If earlier initial-version prose
 > in this file conflicts with that decision summary, follow the summary.
 
@@ -190,9 +190,9 @@ src/gdis_loader/
 Нужны как минимум два понятия:
 
 - `base_well_id` — физический корень, используемый только для lineage поиска;
-- `target_well_id` — отдельная lifecycle identity, сохраняющая suffix (`ЗБС`, `ПВЛГ`, `МЗС` и неизвестные варианты).
+- `target_well_id` — отдельная lifecycle identity, сохраняющая заданный источником suffix (`ЗБС`, `МЗС` и неизвестные варианты); этапы `ПВЛГ`/`ПНЛГ` могут сохранять display number.
 
-`51 != 51_ЗБС`, `54 != 54_ПВЛГ`, `10403 != 10403_МЗС`. МЗС — отдельная история, не схлопывать его с материнской скважиной. Для fund без suffix связывать completion только через подтвержденную историю, месторождение, пласт и однозначную дату. LHA без suffix присоединять только при однозначном temporal lifecycle assignment. Не синтезировать ЗБС2/ЗБС3.
+`51 != 51_ЗБС`, `10403 != 10403_МЗС`. МЗС, ГС и mother well — отдельные истории. ЗБС, ПВЛГ и ПНЛГ начинают новую history; ПВР и КЛК сами по себе не начинают. Перевод после ПВЛГ/ПНЛГ сохраняет display well number, если источник его не меняет. Для fund без suffix связывать completion только через подтвержденную историю, месторождение, нормализованный пласт и effective date. Последовательным current ЗБС присваивать deterministic ordinal по fund/history; не нумеровать исторические ветви произвольно.
 
 При нескольких равноценных кандидатах считать match неоднозначным и не выбирать случайно.
 
@@ -203,7 +203,7 @@ src/gdis_loader/
 Для бизнес-логики загрузчика источником истины являются только:
 
 1. `GDIS_Rating_Calculator_FIXED.xlsx`;
-2. прямые ответы заказчика в `Вопросы_v1.1(1).xlsx` и пояснение `Описание.txt`;
+2. последние прямые ответы заказчика в `Вопросы_v2` и `Вопросы_v3`, затем последнее прямое уточнение по `Дельта ГДМ` и пояснение `Описание.txt`;
 3. `База по скважинам.xlsx`;
 4. `Статус исследований_2026.xlsx`;
 5. текущий калькулятор;
@@ -329,47 +329,41 @@ Release/build workflow на Windows:
 - коммитить файлы из `data/`;
 - снижать строгость тестов только ради зеленого CI.
 
-## Текущие подтвержденные решения заказчика
+## Текущие подтвержденные решения заказчика (v0.13)
 
-- `validate` обнаруживает canonical месторождения в текущем фонде, сообщает
-  coverage по источникам и не требует target field. `update` принимает только
-  явно выбранное поле и создаёт книгу для одного поля. Не использовать
-  hardcoded/default `Береговое` как scope.
-- В `Данные` попадают только eligible rows выбранного поля: дающие, дающие газ,
-  остановленные в отчетном периоде/месяце. Первые две категории отображаются
-  как `Дающие газ`, остановленные как `Остановленные в отчетном периоде`.
-- Canonical source-sheet mappings включают `БЛУ -> Береговое`,
-  `ПЛУ -> Пырейное`, `ХЛУ -> Хадырьяхинское`; mapping — способ чтения, не список
-  вариантов для GUI. Новое поле из фонда сохраняется в discovery с warning,
-  если его mapping не настроен.
-- Для пустого `output` генерировать `<calculator>_UPDATED_<field>.xlsx` только
-  после явного выбора поля. Явный путь результата не менять.
-- `calculation_date` — локальная системная дата операции. Получить один раз в
-  начале validate/update и передавать дальше явно.
-- Начальный ноль числовой части номера незначащий. `base_well_id` является
-  физическим корнем для lineage, а `target_well_id` сохраняет suffix.
-  Материнская, ЗБС, ПВЛГ/перевод и МЗС — разные lifecycle identities. Не
-  схлопывать МЗС; неизвестный suffix сохранять.
-- Месяц/год в новой базе не превращать в синтетический день. `Дата запуска`
-  записывается только с точностью DAY; MONTH/YEAR остаётся пустой с provenance.
-- Подтвержденные классы ГДИ: ИД, ИД+КВД, КВД. Освоение, отдельные Pст/Pпл
-  исключить. Не считать глубину условием валидности ГДИ.
-- `ИД+КВД` считается одним ГДИ и входит одновременно в группы ИД и КВД для
-  соответствующих продолжительностей. При partial-date boundary количество
-  оставлять пустым, если неизвестный порядок влияет на результат.
-- Подтвержденные производные: продуктивность `a_current > a_previous`; рост Cl
-  только при `Cl_current > 2000` и `delta > 1000`; продолжительности в годах —
-  фактические дни/365 без округления. Missing/invalid не считать значением Нет.
-- Источник `Статус исследований_2026.xlsx` читать по mapping ЛУ; `abs(Delta)>5`
-  означает per-row candidate проблемы адаптации. Целевой `Проблемы ГДМ` пока
-  пустой до ответа о выборе актуальной строки.
-- В текущих target rows временно писать `ГТМ = Нет`. ЛНД вычислять через
-  confirmed tri-state, depth > 0 для выбранной GDI записи — глубинное
-  исследование. Missing/invalid не превращать в `Нет`.
-- Для одинаковых метрики/timestamp в ЛХА выбирать максимум валидных numeric
-  значений, после collapse выбирать current/previous; выдавать INFO с provenance.
-- Девять blockers перечислены в `docs/OPEN_QUESTIONS.md`; по ним запрещены
-  fallback-значения и догадки.
-- `Расходомер`, `Последний АДД`, `Не проведен АДД`, `Техническая возможность`
-  остаются пустыми до отдельной structural calculator migration. Формулы,
-  критерии, настройки и остальные sheets не менять.
+- Последние ответы v2/v3 нормативны. Исторические вопросы по датам, lifecycle,
+  plast, ГДИ, durations, daily working day, missing-data и выбору ГДМ закрыты.
+- `validate` находит fields и coverage из источников; не проверяет output и не
+  требует field. `update` требует explicit field и пишет только eligible rows.
+  Для пустого output имя `<calculator>_UPDATED_<field>.xlsx`; explicit output
+  сохраняется без изменений.
+- MONTH date становится effective first day of month; YEAR — Jan 1. Raw value,
+  source precision, effective date и defaulting rule различаются в provenance.
+- Lifecycle boundaries: ЗБС, ПВЛГ, ПНЛГ. ПВР, КЛК и прочие ГТМ не границы.
+  Перевод после ПВЛГ/ПНЛГ сохраняет display number. Последовательные current
+  ЗБС получают deterministic ordinal. ГС и МЗС отдельные histories.
+- Plast canonicalizer убирает sublayer suffix, нормализует составные пласты и
+  никогда не использует fuzzy matching.
+- GDI prefixes распознаются в порядке ИД+КВД, ИД, КВД. Exact business duplicates
+  схлопываются с объединением provenance; отличия business attributes оставляют
+  отдельные записи.
+- GDI count — deduplicated valid rows текущих lifecycle/plast с датой `>= launch`.
+  Для продуктивности участвуют только valid GDI rows с numeric `a`.
+- GDM Delta выбирается по текущему field/lifecycle/plast; разные Delta между
+  собой не сравниваются. Любое finite numeric, включая 0 и negative, валидно.
+  Fallback 365 дней — временная трактовка
+  `PROJECT_INTERPRETATION_PENDING_FUTURE_CONFIRMATION`, не blocker release.
+- Debit — арифметическое среднее numeric daily rates строго выше configurable
+  working-day threshold; default 0. Неконфликтное field/well assignment обязателен.
+- Качественные признаки при недостаточных данных остаются blank, не `Нет`.
+  Downstream meaning: `μ=0` и исключить criterion из final `λ`. Текущая formula
+  layer этому не полностью соответствует; новую structural migration не делать,
+  gap описан в `docs/STRUCTURAL_CALCULATOR_MIGRATION.md`.
+- Configurable numeric thresholds и defaults описаны в `config.example.toml`.
+  Business semantics, valid prefixes, lifecycle, normalization, strict operators,
+  duplicate policy и missing-data policy в GUI/config не выносятся.
+- `Расходомер`, поля АДД, `Техническая возможность`, `Manual μ` остаются пустыми.
+  Не менять formula sheets, calculation settings или остальные parts книги.
+- Известная production data ambiguity: у 12 target wells нет безопасного daily
+  field assignment; их debit остаётся blank. Другие неоднозначные matches также
+  остаются нерешёнными с diagnostic, без случайного выбора.

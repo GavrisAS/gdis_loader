@@ -30,11 +30,11 @@ def lnd_condition(rfp_result: object, reliability: object) -> bool | None:
     return None
 
 
-def downhole_condition(raw_depth: object) -> bool | None:
+def downhole_condition(raw_depth: object, threshold_m: float) -> bool | None:
     """Return whether one study is downhole, preserving missing/invalid state."""
 
     depth = parse_number(raw_depth)
-    return None if depth is None else depth > 0
+    return None if depth is None else depth > threshold_m
 
 
 def duration_without_gdi_years(
@@ -61,10 +61,10 @@ def specific_gdi_count(
     return duration / gdi_count
 
 
-def insufficient_gdi(gdi_count: int) -> bool:
-    """Apply the approved 0/1 versus 2+ count threshold as a reusable helper."""
+def insufficient_gdi(gdi_count: int, min_count: int) -> bool:
+    """Apply the configured minimum count threshold."""
 
-    return gdi_count <= 1
+    return gdi_count < min_count
 
 
 def exact_calendar_date(value: datetime | date) -> date:

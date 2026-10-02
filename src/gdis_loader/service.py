@@ -14,7 +14,10 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from gdis_loader import __version__
+from gdis_loader.config import CriteriaConfig
+from gdis_loader.domain.dates import date_defaulting_rule, effective_date
 from gdis_loader.domain.models import (
+    DailyTelemetryRow,
     DatePrecision,
     DiagnosticIssue,
     FundCategory,
@@ -41,8 +44,9 @@ from gdis_loader.matching.lifecycle import (
     resolve_lifecycle_stage,
 )
 from gdis_loader.matching.matcher import GdiIndex, match_all
-from gdis_loader.matching.normalize import normalize_field_name
+from gdis_loader.matching.normalize import normalize_field_name, normalize_well_id
 from gdis_loader.progress import ProgressCallback, ProgressUpdate
+from gdis_loader.readers.daily import read_daily_report
 from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.lha import LhaIndex, read_lha
@@ -53,14 +57,21 @@ from gdis_loader.transforms.aggregates import (
     count_gdi_since_launch,
     duration_years,
     insufficient_gdi_from_bounds,
+    mean_working_day_rate,
     productivity_decline,
 )
+from gdis_loader.transforms.gdi import collapse_exact_gdi_duplicates
+from gdis_loader.transforms.research_status import gdm_problem, select_gdm_delta
 from gdis_loader.transforms.rules import (
     downhole_condition,
     lnd_condition,
     specific_gdi_count,
 )
-from gdis_loader.validation.sources import ValidationResult, validate_inputs
+from gdis_loader.validation.sources import (
+    ValidationResult,
+    validate_inputs,
+    validate_output_path,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -229,6 +240,22 @@ def _new_report(
     )
 
 
+def _criteria_snapshot(
+    criteria: CriteriaConfig,
+    explicit_fields: frozenset[str],
+    source: str | Path | None,
+) -> dict[str, object]:
+    values = criteria.as_dict()
+    defaults = CriteriaConfig().as_dict()
+    explicit = set(explicit_fields)
+    return {
+        "config_source": str(source) if source is not None else None,
+        "values": values,
+        "defaults": defaults,
+        "value_origin": {name: "config" if name in explicit else "default" for name in values},
+    }
+
+
 def _append_issues(report: LoadReport, issues: Iterable[DiagnosticIssue]) -> None:
     for issue in issues:
         if issue in report.issues:
@@ -366,7 +393,7 @@ def _launch_date_for_target(
     report: LoadReport,
     resolution: LifecycleResolution | None = None,
 ) -> date | None:
-    """Return a launch date only when lifecycle and source precision are exact."""
+    """Return the agreed effective launch date while reporting source precision."""
 
     resolution = resolution or resolve_lifecycle_stage(fund_well, record, histories)
     if resolution.issue is not None:
@@ -395,17 +422,19 @@ def _launch_date_for_target(
         return None
 
     launch = stage.started_at
+    effective = effective_date(launch)
     if launch.precision is not DatePrecision.DAY:
-        report.launch_date_incomplete += 1
+        report.launch_date_defaulted += 1
         _append_issues(
             report,
             (
                 DiagnosticIssue(
-                    code="WELL_HISTORY_DATE_INCOMPLETE_PRECISION",
-                    severity=IssueSeverity.WARNING,
+                    code="LAUNCH_DATE_DEFAULTED_BY_CUSTOMER_RULE",
+                    severity=IssueSeverity.INFO,
                     message=(
-                        f"Дата начала истории имеет точность {launch.precision.value}; "
-                        "точная дата в лист Данные не записана."
+                        f"Источник содержит дату с точностью {launch.precision.value}; "
+                        f"для расчетов использована {effective.isoformat()} "
+                        "по согласованному правилу."
                     ),
                     source="well_history",
                     well_id=fund_well.base_well_id,
@@ -413,10 +442,8 @@ def _launch_date_for_target(
                 ),
             ),
         )
-        return None
-    assert launch.month is not None and launch.day is not None
     report.launch_date_filled += 1
-    return date(launch.year, launch.month, launch.day)
+    return effective
 
 
 def _append_field_provenance(
@@ -444,9 +471,20 @@ def _effective_target_identity(
         if stage.target_well_id:
             return stage.target_well_id
         if stage.event_kind is WellEventKind.INITIAL:
-            return fund_well.target_well_id or stage.physical_root
-        if stage.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG}:
-            return f"{stage.physical_root}_{stage.event_kind.value}"
+            return (
+                fund_well.target_well_id
+                or (record.target_well_id if record is not None else None)
+                or stage.physical_root
+            )
+        if stage.event_kind is WellEventKind.ZBS:
+            return f"{stage.physical_root}_ЗБС"
+        if stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
+            source_identity = (
+                record.target_well_id if record is not None else fund_well.target_well_id
+            )
+            if source_identity and source_identity != stage.physical_root:
+                return source_identity
+            return stage.physical_root
     if record is not None:
         return record.target_well_id or record.raw_well_name
     return fund_well.target_well_id or fund_well.raw_display
@@ -461,10 +499,29 @@ def _gdi_history_for_target(
 ) -> tuple[GdiRecord, ...]:
     """Return valid rows assigned to the selected lifecycle and exact plast."""
 
-    selected_identity = selected.target_well_id
+    return _gdi_history_for_stage(
+        fund_well,
+        history_records,
+        histories,
+        selected_stage,
+        selected.normalized_plast,
+        selected.target_well_id,
+    )
+
+
+def _gdi_history_for_stage(
+    fund_well: FundWell,
+    history_records: tuple[GdiRecord, ...],
+    histories: tuple[WellHistory, ...],
+    selected_stage: WellStage | None,
+    normalized_plast: str | None,
+    selected_identity: str | None = None,
+) -> tuple[GdiRecord, ...]:
+    """Return valid rows on one resolved lifecycle stage and normalized plast."""
+
     matching: list[GdiRecord] = []
     for record in history_records:
-        if record.normalized_plast != selected.normalized_plast:
+        if record.normalized_plast != normalized_plast:
             continue
         resolution = resolve_lifecycle_stage(fund_well, record, histories)
         if selected_stage is not None:
@@ -478,6 +535,37 @@ def _gdi_history_for_target(
             key=lambda record: (record.study_date or datetime.min, record.source_row),
         )
     )
+
+
+def _prelaunch_gdi_records_for_stage(
+    fund_well: FundWell,
+    records: tuple[GdiRecord, ...],
+    histories: tuple[WellHistory, ...],
+    stage: WellStage,
+) -> tuple[GdiRecord, ...]:
+    """Find same-identity/plast valid rows before the agreed launch day."""
+
+    launch_day = effective_date(stage.started_at)
+    result: list[GdiRecord] = []
+    for record in records:
+        if (
+            record.gdi_kind not in {GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD}
+            or record.normalized_plast != stage.plast
+            or record.study_date is None
+            or record.study_date.date() >= launch_day
+        ):
+            continue
+        resolution = resolve_lifecycle_stage(fund_well, record, histories)
+        stage_identity = stage.target_well_id or stage.physical_root
+        source_identity = (
+            record.target_well_id or normalize_well_id(record.raw_well_name or "").target_well_id
+        )
+        same_unlaunched_identity = (
+            stage.event_kind is WellEventKind.INITIAL and source_identity == stage.physical_root
+        ) or (stage.event_kind is WellEventKind.ZBS and source_identity == stage_identity)
+        if resolution.stage == stage or (resolution.stage is None and same_unlaunched_identity):
+            result.append(record)
+    return tuple(result)
 
 
 def _status_candidates_for_target(
@@ -525,6 +613,37 @@ def _status_candidates_for_target(
             continue
 
         if exact_lifecycle_identity:
+            if lifecycle_stage is not None:
+                if record.study_date is None:
+                    add_issue(
+                        "WELL_HISTORY_STAGE_AMBIGUOUS",
+                        "Строка статуса с lifecycle suffix без даты не может быть отнесена "
+                        "к текущему этапу.",
+                        record,
+                        (lifecycle_stage.source_location,),
+                    )
+                    continue
+                assignment = assign_stage_by_date(
+                    physical_root=fund_well.base_well_id,
+                    normalized_field=fund_well.normalized_field,
+                    normalized_plast=normalized_plast or "",
+                    observed_at=record.study_date,
+                    histories=histories,
+                    observation_location=SourceLocation(
+                        record.source_file,
+                        record.source_sheet,
+                        record.date_cell,
+                    ),
+                )
+                if assignment.stage != lifecycle_stage:
+                    if assignment.issue is not None:
+                        add_issue(
+                            assignment.issue.code,
+                            assignment.issue.message,
+                            record,
+                            assignment.issue.locations,
+                        )
+                    continue
             if record.normalized_plast == normalized_plast:
                 result.append(record)
             elif lifecycle_stage is not None:
@@ -621,10 +740,60 @@ def _target_state(well: FundWell) -> str:
 
 def _gdi_locations(record: GdiRecord, *cell_names: str) -> tuple[SourceLocation, ...]:
     return tuple(
-        SourceLocation(record.source_file, record.source_sheet, cell)
+        SourceLocation(
+            record.source_file,
+            record.source_sheet,
+            re.sub(r"\d+$", str(row), cell),
+        )
+        for row in (record.source_rows or (record.source_row,))
         for name in cell_names
         if (cell := getattr(record, name)) is not None and record.source_file
     )
+
+
+def _daily_record_for_target(
+    fund_well: FundWell,
+    target_well_id: str,
+    all_fund_wells: tuple[FundWell, ...],
+    daily_rows: tuple[DailyTelemetryRow, ...],
+) -> tuple[DailyTelemetryRow | None, str | None]:
+    """Select one daily row without joining the same number across fields."""
+
+    source_matches = tuple(item for item in daily_rows if item.target_well_id == target_well_id)
+    if not source_matches and fund_well.base_well_id is not None:
+        source_matches = tuple(
+            item for item in daily_rows if item.target_well_id == fund_well.base_well_id
+        )
+    if not source_matches:
+        return None, "DEBIT_SOURCE_ROW_MISSING"
+
+    canonical_rows = tuple(
+        item
+        for item in source_matches
+        if item.raw_field_name
+        and normalize_field_name(item.raw_field_name) == fund_well.normalized_field
+    )
+    if canonical_rows:
+        source_matches = canonical_rows
+    elif any(
+        item.raw_field_name
+        and normalize_field_name(item.raw_field_name)
+        in {normalize_field_name(value) for value in FIELD_SHEETS.values()}
+        for item in source_matches
+    ):
+        return None, "DEBIT_SOURCE_FIELD_MISMATCH"
+    else:
+        related_fields = {
+            item.normalized_field
+            for item in all_fund_wells
+            if item.base_well_id == fund_well.base_well_id
+        }
+        if related_fields != {fund_well.normalized_field}:
+            return None, "DEBIT_SOURCE_FIELD_AMBIGUOUS"
+
+    if len(source_matches) != 1:
+        return None, "DEBIT_SOURCE_ROW_AMBIGUOUS"
+    return source_matches[0], None
 
 
 def _build_target_rows(
@@ -635,9 +804,12 @@ def _build_target_rows(
     histories: tuple[WellHistory, ...] = (),
     calculation_date: date | None = None,
     research_status: tuple[ResearchStatusRecord, ...] = (),
+    criteria: CriteriaConfig | None = None,
+    daily_rows: tuple[DailyTelemetryRow, ...] = (),
 ) -> tuple[TargetRow, ...]:
     if report.target_field is None:
         raise ValueError("Для подготовки target rows требуется выбранное месторождение.")
+    criteria = criteria or CriteriaConfig()
     target_field = normalize_field_name(report.target_field)
     scoped_wells = tuple(well for well in fund.wells if well.normalized_field == target_field)
     eligible_wells = tuple(well for well in scoped_wells if well.is_rating_eligible)
@@ -687,6 +859,7 @@ def _build_target_rows(
             ):
                 report.unsuffixed_gdi_assigned += 1
             row_provenance: dict[str, tuple[SourceLocation, ...]] = {}
+            row_provenance_details: dict[str, dict[str, object]] = {}
             launch_locations = (
                 (lifecycle.stage.source_location,) if lifecycle.stage is not None else ()
             )
@@ -724,7 +897,9 @@ def _build_target_rows(
             else:
                 count_bounds = count_gdi_since_launch(history_records, launch_partial)
                 gdi_count = count_bounds.exact_count
-                insufficient_value = insufficient_gdi_from_bounds(count_bounds)
+                insufficient_value = insufficient_gdi_from_bounds(
+                    count_bounds, criteria.insufficient_gdi_min_count
+                )
                 count_locations = tuple(
                     location
                     for gdi_record in (
@@ -736,7 +911,16 @@ def _build_target_rows(
                     )
                 )
                 if gdi_count is not None:
+                    assert lifecycle.stage is not None
                     report.gdi_count_filled += 1
+                    report.gdi_pre_launch_excluded += len(
+                        _prelaunch_gdi_records_for_stage(
+                            fund_well,
+                            gdi_index.history_for(fund_well),
+                            histories,
+                            lifecycle.stage,
+                        )
+                    )
                     row_provenance["Количество ГДИ"] = _unique_locations(
                         (*launch_locations, *count_locations)
                     )
@@ -792,45 +976,34 @@ def _build_target_rows(
                         ),
                     )
 
-            if (
-                lifecycle.stage is not None
-                and lifecycle.stage.started_at.precision is DatePrecision.DAY
-            ):
-                stage_date = date(
-                    lifecycle.stage.started_at.year,
-                    lifecycle.stage.started_at.month or 1,
-                    lifecycle.stage.started_at.day or 1,
+            if launch_date is not None and gdi_count is not None:
+                specific_value = specific_gdi_count(
+                    calculation_date or report.calculation_date or fund_well.fund_date,
+                    launch_date,
+                    gdi_count,
                 )
-                if launch_date is not None and gdi_count is not None:
-                    specific_value = specific_gdi_count(
-                        calculation_date or report.calculation_date or fund_well.fund_date,
-                        stage_date,
-                        gdi_count,
+                if specific_value is not None:
+                    report.specific_gdi_count_filled += 1
+                    row_provenance["Удельное количество ГДИ"] = _unique_locations(
+                        (*launch_locations, *count_locations)
                     )
-                    if specific_value is not None:
-                        report.specific_gdi_count_filled += 1
-                        row_provenance["Удельное количество ГДИ"] = _unique_locations(
-                            (*launch_locations, *count_locations)
-                        )
-                    else:
-                        _append_issues(
-                            report,
-                            (
-                                DiagnosticIssue(
-                                    code="GDI_SPECIFIC_RATE_ZERO_COUNT",
-                                    severity=IssueSeverity.INFO,
-                                    message=(
-                                        "Количество ГДИ равно нулю; удельное количество оставлено "
-                                        "пустым, μi=0 относится к отдельной миграции формул."
-                                    ),
-                                    source="gdi",
-                                    well_id=fund_well.base_well_id,
-                                    locations=launch_locations,
-                                ),
-                            ),
-                        )
                 else:
-                    specific_value = None
+                    _append_issues(
+                        report,
+                        (
+                            DiagnosticIssue(
+                                code="GDI_SPECIFIC_RATE_ZERO_COUNT",
+                                severity=IssueSeverity.INFO,
+                                message=(
+                                    "Количество ГДИ равно нулю; удельное количество оставлено "
+                                    "пустым, μi=0 не включает критерий в итоговый коэффициент."
+                                ),
+                                source="gdi",
+                                well_id=fund_well.base_well_id,
+                                locations=launch_locations,
+                            ),
+                        ),
+                    )
             else:
                 specific_value = None
 
@@ -848,6 +1021,7 @@ def _build_target_rows(
                     if productivity_decline(
                         previous_a.productivity_a_value,
                         current_a.productivity_a_value,
+                        criteria.productivity_min_increase,
                     )
                     else "Нет"
                 )
@@ -909,7 +1083,9 @@ def _build_target_rows(
                 else:
                     report.lnd_false += 1
 
-            downhole_value = downhole_condition(record.depth_raw_value)
+            downhole_value = downhole_condition(
+                record.depth_raw_value, criteria.downhole_depth_threshold_m
+            )
             if downhole_value is None:
                 report.downhole_unknown += 1
                 _append_issues(
@@ -993,7 +1169,16 @@ def _build_target_rows(
 
             chlorine_value: str | None = None
             if cl_current is not None and cl_previous is not None:
-                chlorine_value = "Да" if chlorine_growth(cl_current, cl_previous) else "Нет"
+                chlorine_value = (
+                    "Да"
+                    if chlorine_growth(
+                        cl_current,
+                        cl_previous,
+                        criteria.chlorine_current_min_mg_dm3,
+                        criteria.chlorine_delta_min_mg_dm3,
+                    )
+                    else "Нет"
+                )
                 report.chlorine_growth_filled += 1
                 row_provenance["Рост хлора"] = _unique_locations(
                     (
@@ -1081,14 +1266,31 @@ def _build_target_rows(
                 default=None,
             )
             if latest_id is None or latest_id.study_date is None:
-                duration_without_id = None
+                duration_without_id = (
+                    duration_years(operation_date, launch_date) if launch_date is not None else None
+                )
+                if duration_without_id is not None:
+                    report.duration_without_id_filled += 1
+                    row_provenance["Продолжительность без ИД"] = launch_locations
                 _append_issues(
                     report,
                     (
                         DiagnosticIssue(
-                            code="NO_ID_HISTORY",
-                            severity=IssueSeverity.WARNING,
-                            message="В текущей lifecycle-истории нет валидного ИД.",
+                            code="NO_ID_HISTORY_USING_LAUNCH_DATE"
+                            if duration_without_id is not None
+                            else "NO_ID_HISTORY_LAUNCH_UNKNOWN",
+                            severity=(
+                                IssueSeverity.INFO
+                                if duration_without_id is not None
+                                else IssueSeverity.WARNING
+                            ),
+                            message=(
+                                "В текущей lifecycle-истории нет ИД; длительность рассчитана от "
+                                "эффективной даты запуска."
+                                if duration_without_id is not None
+                                else "В текущей lifecycle-истории нет ИД и не определена "
+                                "дата запуска."
+                            ),
                             source="gdi",
                             well_id=fund_well.base_well_id,
                             locations=fund_well.locations,
@@ -1112,14 +1314,31 @@ def _build_target_rows(
                 default=None,
             )
             if latest_kvd is None or latest_kvd.study_date is None:
-                duration_without_kvd = None
+                duration_without_kvd = (
+                    duration_years(operation_date, launch_date) if launch_date is not None else None
+                )
+                if duration_without_kvd is not None:
+                    report.duration_without_kvd_filled += 1
+                    row_provenance["Продолжительность без КВД"] = launch_locations
                 _append_issues(
                     report,
                     (
                         DiagnosticIssue(
-                            code="NO_KVD_HISTORY",
-                            severity=IssueSeverity.WARNING,
-                            message="В текущей lifecycle-истории нет валидного КВД.",
+                            code="NO_KVD_HISTORY_USING_LAUNCH_DATE"
+                            if duration_without_kvd is not None
+                            else "NO_KVD_HISTORY_LAUNCH_UNKNOWN",
+                            severity=(
+                                IssueSeverity.INFO
+                                if duration_without_kvd is not None
+                                else IssueSeverity.WARNING
+                            ),
+                            message=(
+                                "В текущей lifecycle-истории нет КВД; длительность рассчитана от "
+                                "эффективной даты запуска."
+                                if duration_without_kvd is not None
+                                else "В текущей lifecycle-истории нет КВД и не определена "
+                                "дата запуска."
+                            ),
                             source="gdi",
                             well_id=fund_well.base_well_id,
                             locations=fund_well.locations,
@@ -1157,36 +1376,166 @@ def _build_target_rows(
             )
             _append_issues(report, gdm_match_issues)
             problem_candidates = tuple(
-                item for item in gdm_candidates if item.is_adaptation_problem is True
+                item
+                for item in gdm_candidates
+                if item.delta_value is not None
+                and gdm_problem(item.delta_value, criteria.gdm_abs_delta_threshold)
             )
-            if problem_candidates:
-                report.gdm_rows_per_target[effective_identity] = len(problem_candidates)
-                report.gdm_target_candidate_rows += len(problem_candidates)
-                locations = tuple(
-                    location for item in problem_candidates for location in item.locations
+            if gdm_candidates:
+                report.gdm_rows_per_target[effective_identity] = len(gdm_candidates)
+            report.gdm_target_candidate_rows += len(problem_candidates)
+            gdm_selection = select_gdm_delta(gdm_candidates, criteria.gdm_fallback_max_age_days)
+            gdm_value: str | None = None
+            if gdm_selection.record is not None:
+                selected_delta = gdm_selection.record
+                assert selected_delta.delta_value is not None
+                gdm_is_problem = gdm_problem(
+                    selected_delta.delta_value, criteria.gdm_abs_delta_threshold
                 )
-                row_provenance["Проблемы ГДМ"] = _unique_locations(locations)
+                gdm_value = "Да" if gdm_is_problem else "Нет"
+                if gdm_is_problem:
+                    report.gdm_filled_yes += 1
+                else:
+                    report.gdm_filled_no += 1
+                if gdm_selection.fallback:
+                    report.gdm_fallback_selected += 1
+                row_provenance["Проблемы ГДМ"] = selected_delta.locations
+                latest_relevant = gdm_selection.latest_relevant
+                row_provenance_details["Проблемы ГДМ"] = {
+                    "selected_delta_cell": selected_delta.delta_cell,
+                    "selected_research_date": (
+                        effective_date(selected_delta.study_date).isoformat()
+                        if selected_delta.study_date is not None
+                        else None
+                    ),
+                    "selected_source_partial_date": (
+                        selected_delta.study_date.to_dict()
+                        if selected_delta.study_date is not None
+                        else None
+                    ),
+                    "selection": "fallback" if gdm_selection.fallback else "latest",
+                    "latest_relevant_date": (
+                        effective_date(latest_relevant.study_date).isoformat()
+                        if latest_relevant is not None and latest_relevant.study_date is not None
+                        else None
+                    ),
+                    "age_days": gdm_selection.age_days,
+                    "delta": selected_delta.delta_value,
+                    "abs_delta_threshold": criteria.gdm_abs_delta_threshold,
+                }
+            else:
+                report.gdm_blank += 1
+                if gdm_selection.stale_age_days is not None:
+                    report.gdm_stale_fallback_rejected += 1
+                    code = "GDM_FALLBACK_OUTSIDE_WINDOW"
+                    message = (
+                        f"Ближайшая валидная Дельта старше допустимого окна: "
+                        f"{gdm_selection.stale_age_days} дней."
+                    )
+                elif gdm_candidates:
+                    code = "GDM_DELTA_MISSING_OR_INVALID"
+                    message = (
+                        "Для актуальных строк ГДМ нет валидной числовой Дельты в допустимом окне."
+                    )
+                else:
+                    code = "GDM_CURRENT_HISTORY_NOT_FOUND"
+                    message = "Для текущей lifecycle-истории и пласта не найден статус ГДМ."
                 _append_issues(
                     report,
                     (
                         DiagnosticIssue(
-                            code="GDM_CURRENT_ROW_UNRESOLVED",
+                            code=code,
                             severity=IssueSeverity.WARNING,
-                            message=(
-                                f"Найдено {len(problem_candidates)} строк-кандидатов "
-                                "abs(Дельта)>5; значение удержано до утверждения правила "
-                                "актуальной строки."
-                            ),
+                            message=message,
                             source="research_status",
                             well_id=fund_well.base_well_id,
-                            locations=_unique_locations(locations),
+                            locations=_unique_locations(
+                                location for item in gdm_candidates for location in item.locations
+                            ),
+                        ),
+                    ),
+                )
+
+            daily_item, daily_issue = _daily_record_for_target(
+                fund_well,
+                effective_identity,
+                fund.wells,
+                daily_rows,
+            )
+            debit_value: float | None = None
+            if daily_issue is None and daily_item is not None:
+                debit_value = mean_working_day_rate(daily_item.daily_values, criteria)
+                valid_day_count = sum(
+                    value is not None and value > criteria.gas_rate_working_day_min_rate
+                    for value in daily_item.daily_values
+                )
+                report.debit_valid_day_count += valid_day_count
+                if debit_value is None:
+                    report.debit_blank += 1
+                    _append_issues(
+                        report,
+                        (
+                            DiagnosticIssue(
+                                code="DEBIT_NO_VALID_WORKING_DAYS",
+                                severity=IssueSeverity.WARNING,
+                                message=(
+                                    "В суточном рапорте нет числовых значений выше порога "
+                                    "работающего дня; Дебит оставлен пустым."
+                                ),
+                                source="daily_report",
+                                well_id=fund_well.base_well_id,
+                                locations=tuple(
+                                    SourceLocation(
+                                        daily_item.source_file,
+                                        daily_item.source_sheet,
+                                        cell,
+                                    )
+                                    for cell in daily_item.daily_cells
+                                ),
+                            ),
+                        ),
+                    )
+                else:
+                    report.debit_filled += 1
+                    row_provenance["Дебит"] = tuple(
+                        SourceLocation(
+                            daily_item.source_file,
+                            daily_item.source_sheet,
+                            cell,
+                        )
+                        for cell, value in zip(
+                            daily_item.daily_cells, daily_item.daily_values, strict=False
+                        )
+                        if value is not None and value > criteria.gas_rate_working_day_min_rate
+                    )
+                    row_provenance_details["Дебит"] = {
+                        "valid_working_days": valid_day_count,
+                        "working_day_min_rate": criteria.gas_rate_working_day_min_rate,
+                        "aggregation": "arithmetic_mean",
+                    }
+            else:
+                report.debit_blank += 1
+                code = daily_issue or "DEBIT_SOURCE_ROW_MISSING"
+                _append_issues(
+                    report,
+                    (
+                        DiagnosticIssue(
+                            code=code,
+                            severity=IssueSeverity.WARNING,
+                            message=(
+                                "Строка суточного рапорта не сопоставлена однозначно с текущей "
+                                "скважиной; Дебит оставлен пустым."
+                            ),
+                            source="daily_report",
+                            well_id=fund_well.base_well_id,
+                            locations=fund_well.locations,
                         ),
                     ),
                 )
 
             target_row = TargetRow(
                 well=effective_identity,
-                plast=record.raw_plast,
+                plast=record.normalized_plast,
                 state=state,
                 launch_date=launch_date,
                 gdi_count=gdi_count,
@@ -1202,6 +1551,7 @@ def _build_target_rows(
                 productivity_decline=productivity_value,
                 chlorine_growth=chlorine_value,
                 lnd=target_lnd,
+                gdm_problems=gdm_value,
                 cl_current=cl_current,
                 cl_previous=cl_previous,
                 duration_without_gdi=duration_without_gdi,
@@ -1210,8 +1560,18 @@ def _build_target_rows(
                 vgf_previous=vgf_previous,
                 duration_without_id=duration_without_id,
                 duration_without_kvd=duration_without_kvd,
+                debit=debit_value,
             )
             for field_name, locations in row_provenance.items():
+                details: dict[str, object] = row_provenance_details.get(field_name, {})
+                if field_name == "Дата запуска" and lifecycle.stage is not None:
+                    source_partial = lifecycle.stage.started_at
+                    details = {
+                        **details,
+                        "source_partial_date": source_partial.to_dict(),
+                        "effective_date": launch_date.isoformat() if launch_date else None,
+                        "date_defaulting_rule": date_defaulting_rule(source_partial),
+                    }
                 _append_field_provenance(
                     report,
                     effective_identity,
@@ -1221,6 +1581,7 @@ def _build_target_rows(
                     if field_name.startswith("Продолжительность")
                     or field_name == "Удельное количество ГДИ"
                     else None,
+                    **details,
                 )
             if duration_gdi_details:
                 report.field_provenance.append(
@@ -1251,14 +1612,33 @@ def _build_target_rows(
         gdi_count = None
         insufficient_value: bool | None = None
         duration_without_gdi = None
+        duration_without_id = None
+        duration_without_kvd = None
         specific_value = None
         operation_date = calculation_date or report.calculation_date or fund_well.fund_date
         if match.status is MatchStatus.NO_GDI and lifecycle.stage is not None:
-            empty_history = ()
-            bounds = count_gdi_since_launch(empty_history, lifecycle.stage.started_at)
+            stage_history = _gdi_history_for_stage(
+                fund_well,
+                gdi_index.history_for(fund_well),
+                histories,
+                lifecycle.stage,
+                lifecycle.stage.plast,
+                fund_well.target_well_id,
+            )
+            bounds = count_gdi_since_launch(stage_history, lifecycle.stage.started_at)
             gdi_count = bounds.exact_count
-            insufficient_value = insufficient_gdi_from_bounds(bounds)
+            insufficient_value = insufficient_gdi_from_bounds(
+                bounds, criteria.insufficient_gdi_min_count
+            )
             report.gdi_count_filled += 1
+            report.gdi_pre_launch_excluded += len(
+                _prelaunch_gdi_records_for_stage(
+                    fund_well,
+                    gdi_index.history_for(fund_well),
+                    histories,
+                    lifecycle.stage,
+                )
+            )
             if insufficient_value is True:
                 report.insufficient_gdi_yes += 1
             elif insufficient_value is False:
@@ -1273,9 +1653,23 @@ def _build_target_rows(
                     definite_after_count=bounds.definite_count,
                     possible_after_count=bounds.possible_count,
                 )
-            if launch_date is not None:
-                duration_without_gdi = duration_years(operation_date, launch_date)
+            latest_gdi = max(
+                (item for item in stage_history if item.study_date is not None),
+                key=lambda item: (item.study_date or datetime.min, item.source_row),
+                default=None,
+            )
+            if latest_gdi is not None and latest_gdi.study_date is not None:
+                duration_without_gdi = duration_years(operation_date, latest_gdi.study_date.date())
+                _append_field_provenance(
+                    report,
+                    fund_well.target_well_id,
+                    "Продолжительность без ГДИ",
+                    _gdi_locations(latest_gdi, "date_cell"),
+                    calculation_date=operation_date.isoformat(),
+                )
                 report.duration_without_gdi_filled += 1
+            elif launch_date is not None:
+                duration_without_gdi = duration_years(operation_date, launch_date)
                 _append_field_provenance(
                     report,
                     fund_well.target_well_id,
@@ -1284,7 +1678,66 @@ def _build_target_rows(
                     calculation_date=operation_date.isoformat(),
                     source_date=launch_date.isoformat(),
                 )
-            elif lifecycle.stage.started_at.precision is not DatePrecision.DAY:
+                report.duration_without_gdi_filled += 1
+            latest_id = max(
+                (
+                    item
+                    for item in stage_history
+                    if item.gdi_kind in {GdiKind.ID, GdiKind.ID_KVD} and item.study_date is not None
+                ),
+                key=lambda item: (item.study_date or datetime.min, item.source_row),
+                default=None,
+            )
+            latest_kvd = max(
+                (
+                    item
+                    for item in stage_history
+                    if item.gdi_kind in {GdiKind.KVD, GdiKind.ID_KVD}
+                    and item.study_date is not None
+                ),
+                key=lambda item: (item.study_date or datetime.min, item.source_row),
+                default=None,
+            )
+            duration_without_id = (
+                duration_years(operation_date, latest_id.study_date.date())
+                if latest_id is not None and latest_id.study_date is not None
+                else duration_years(operation_date, launch_date)
+                if launch_date is not None
+                else None
+            )
+            duration_without_kvd = (
+                duration_years(operation_date, latest_kvd.study_date.date())
+                if latest_kvd is not None and latest_kvd.study_date is not None
+                else duration_years(operation_date, launch_date)
+                if launch_date is not None
+                else None
+            )
+            for field_name, latest_record, duration_value in (
+                ("Продолжительность без ИД", latest_id, duration_without_id),
+                ("Продолжительность без КВД", latest_kvd, duration_without_kvd),
+            ):
+                if duration_value is None:
+                    continue
+                report.duration_without_id_filled += field_name.endswith("ИД")
+                report.duration_without_kvd_filled += field_name.endswith("КВД")
+                _append_field_provenance(
+                    report,
+                    fund_well.target_well_id,
+                    field_name,
+                    _gdi_locations(latest_record, "date_cell", "research_type_cell")
+                    if latest_record is not None
+                    else (lifecycle.stage.source_location,),
+                    calculation_date=operation_date.isoformat(),
+                    source_date=(
+                        latest_record.study_date.date().isoformat()
+                        if latest_record is not None and latest_record.study_date is not None
+                        else launch_date.isoformat()
+                        if launch_date is not None
+                        else None
+                    ),
+                    no_relevant_gdi_history=latest_record is None,
+                )
+            if duration_without_gdi is None:
                 _append_issues(
                     report,
                     (
@@ -1301,7 +1754,7 @@ def _build_target_rows(
                         ),
                     ),
                 )
-            if lifecycle.stage.started_at.precision is DatePrecision.DAY and gdi_count == 0:
+            if launch_date is not None and gdi_count == 0:
                 _append_issues(
                     report,
                     (
@@ -1310,7 +1763,7 @@ def _build_target_rows(
                             severity=IssueSeverity.INFO,
                             message=(
                                 "Количество ГДИ равно нулю; удельное количество оставлено пустым, "
-                                "μi=0 относится к отдельной миграции формул."
+                                "μi=0; критерий не участвует в итоговом коэффициенте λ."
                             ),
                             source="gdi",
                             well_id=fund_well.base_well_id,
@@ -1318,13 +1771,134 @@ def _build_target_rows(
                         ),
                     ),
                 )
+            if launch_date is not None and gdi_count is not None and gdi_count > 0:
+                specific_value = specific_gdi_count(operation_date, launch_date, gdi_count)
+                if specific_value is not None:
+                    report.specific_gdi_count_filled += 1
+                    _append_field_provenance(
+                        report,
+                        fund_well.target_well_id,
+                        "Удельное количество ГДИ",
+                        tuple(
+                            location
+                            for item in bounds.definite_records
+                            for location in _gdi_locations(item, "date_cell")
+                        ),
+                        calculation_date=operation_date.isoformat(),
+                    )
+        target_identity = _effective_target_identity(fund_well, None, lifecycle.stage)
+        gdm_value: str | None = None
+        if match.status is MatchStatus.NO_GDI and lifecycle.stage is not None:
+            gdm_candidates, gdm_issues = _status_candidates_for_target(
+                fund_well,
+                target_identity or fund_well.target_well_id or fund_well.raw_display,
+                lifecycle.stage.plast,
+                lifecycle.stage,
+                research_status,
+                histories,
+            )
+            _append_issues(report, gdm_issues)
+            if gdm_candidates:
+                report.gdm_rows_per_target[target_identity or fund_well.raw_display] = len(
+                    gdm_candidates
+                )
+            selection = select_gdm_delta(gdm_candidates, criteria.gdm_fallback_max_age_days)
+            if selection.record is not None:
+                assert selection.record.delta_value is not None
+                is_problem = gdm_problem(
+                    selection.record.delta_value, criteria.gdm_abs_delta_threshold
+                )
+                gdm_value = "Да" if is_problem else "Нет"
+                report.gdm_filled_yes += int(is_problem)
+                report.gdm_filled_no += int(not is_problem)
+                report.gdm_fallback_selected += int(selection.fallback)
+                _append_field_provenance(
+                    report,
+                    target_identity,
+                    "Проблемы ГДМ",
+                    selection.record.locations,
+                    selection="fallback" if selection.fallback else "latest",
+                    age_days=selection.age_days,
+                    delta=selection.record.delta_value,
+                    abs_delta_threshold=criteria.gdm_abs_delta_threshold,
+                )
+            else:
+                report.gdm_blank += 1
+                _append_issues(
+                    report,
+                    (
+                        DiagnosticIssue(
+                            code=(
+                                "GDM_FALLBACK_OUTSIDE_WINDOW"
+                                if selection.stale_age_days is not None
+                                else "GDM_DELTA_MISSING_OR_INVALID"
+                                if gdm_candidates
+                                else "GDM_CURRENT_HISTORY_NOT_FOUND"
+                            ),
+                            severity=IssueSeverity.WARNING,
+                            message=(
+                                "Для текущей lifecycle-истории нет допустимой валидной Дельты."
+                            ),
+                            source="research_status",
+                            well_id=fund_well.base_well_id,
+                            locations=_unique_locations(
+                                location for item in gdm_candidates for location in item.locations
+                            ),
+                        ),
+                    ),
+                )
+        debit_value: float | None = None
+        if match.status is MatchStatus.NO_GDI:
+            daily_item, daily_issue = _daily_record_for_target(
+                fund_well,
+                target_identity or fund_well.target_well_id or fund_well.raw_display,
+                fund.wells,
+                daily_rows,
+            )
+            if daily_issue is None and daily_item is not None:
+                debit_value = mean_working_day_rate(daily_item.daily_values, criteria)
+                valid_day_count = sum(
+                    value is not None and value > criteria.gas_rate_working_day_min_rate
+                    for value in daily_item.daily_values
+                )
+                report.debit_valid_day_count += valid_day_count
+                if debit_value is None:
+                    report.debit_blank += 1
+                    _append_issues(
+                        report,
+                        (
+                            DiagnosticIssue(
+                                code="DEBIT_NO_VALID_WORKING_DAYS",
+                                severity=IssueSeverity.WARNING,
+                                message=(
+                                    "В суточном рапорте нет числовых значений выше порога "
+                                    "работающего дня; Дебит оставлен пустым."
+                                ),
+                                source="daily_report",
+                                well_id=fund_well.base_well_id,
+                                locations=(
+                                    SourceLocation(
+                                        daily_item.source_file,
+                                        daily_item.source_sheet,
+                                        daily_item.well_cell,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                else:
+                    report.debit_filled += 1
+            else:
+                report.debit_blank += 1
         target_rows.append(
             TargetRow(
                 well=fund_well.target_well_id or fund_well.raw_display,
+                plast=lifecycle.stage.plast if lifecycle.stage is not None else None,
                 state=state,
                 launch_date=launch_date,
                 gdi_count=gdi_count,
                 gtm="Нет",
+                gdm_problems=gdm_value,
                 insufficient_gdi=(
                     "Да"
                     if insufficient_value is True
@@ -1333,6 +1907,9 @@ def _build_target_rows(
                     else None
                 ),
                 duration_without_gdi=duration_without_gdi,
+                duration_without_id=duration_without_id,
+                duration_without_kvd=duration_without_kvd,
+                debit=debit_value,
             )
         )
         _append_issues(
@@ -1399,14 +1976,13 @@ def _prepare(
     report: LoadReport,
     calculation_date: date,
     target_field: str,
+    criteria: CriteriaConfig,
     progress: ProgressCallback | None = None,
 ) -> tuple[tuple[TargetRow, ...], FundParseResult, WellHistoryParseResult]:
     """Read the sources that currently contribute to the target row.
 
-    The daily report is schema-validated before this function is called, but
-    its day values are intentionally not read here until the debit rule is
-    approved.  Keeping that reader independent makes the future change local
-    and avoids turning expected daily placeholders into runtime diagnostics.
+    Daily telemetry is read here so the approved positive-working-day mean can
+    be calculated without putting aggregation logic in the reader.
     """
 
     _report_progress(progress, 20, "Чтение фонда скважин")
@@ -1443,12 +2019,27 @@ def _prepare(
     report.well_history_gtm_events = sum(well_history.event_counts.values())
     report.well_history_date_precision_counts = well_history.date_precision_counts
     _report_progress(progress, 45, "Чтение истории ГДИ")
-    gdi_records, gdi_issues = read_gdi(paths.gdi)
+    raw_gdi_records, gdi_issues = read_gdi(paths.gdi)
     _append_issues(report, gdi_issues)
     target_field_key = normalize_field_name(target_field)
-    scoped_gdi_records = tuple(
-        record for record in gdi_records if record.normalized_field == target_field_key
+    raw_scoped_gdi = tuple(
+        record for record in raw_gdi_records if record.normalized_field == target_field_key
     )
+    report.gdi_raw_record_count = len(raw_scoped_gdi)
+    raw_kind_counts: defaultdict[str, int] = defaultdict(int)
+    nonvalid_labels: defaultdict[str, int] = defaultdict(int)
+    valid_kinds = {GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD}
+    for record in raw_scoped_gdi:
+        raw_kind_counts[record.gdi_kind.value] += 1
+        if record.gdi_kind not in valid_kinds:
+            nonvalid_labels[record.research_type or "(пусто)"] += 1
+    report.gdi_raw_kind_counts = dict(sorted(raw_kind_counts.items()))
+    report.gdi_nonvalid_labels = dict(sorted(nonvalid_labels.items()))
+    gdi_records, duplicate_issues = collapse_exact_gdi_duplicates(raw_scoped_gdi)
+    _append_issues(report, duplicate_issues)
+    scoped_gdi_records = gdi_records
+    report.gdi_exact_duplicates_collapsed = len(raw_scoped_gdi) - len(scoped_gdi_records)
+    report.gdi_deduplicated_record_count = len(scoped_gdi_records)
     gdi_counts: defaultdict[str, int] = defaultdict(int)
     for record in scoped_gdi_records:
         gdi_counts[record.gdi_kind.value] += 1
@@ -1500,8 +2091,13 @@ def _prepare(
         for item in research_status
     )
     report.gdm_problem_candidate_rows = sum(
-        item.is_adaptation_problem is True for item in research_status
+        item.delta_value is not None
+        and gdm_problem(item.delta_value, criteria.gdm_abs_delta_threshold)
+        for item in research_status
     )
+    _report_progress(progress, 72, "Чтение суточного рапорта")
+    daily_rows, daily_issues = read_daily_report(paths.daily_report)
+    _append_issues(report, daily_issues)
     report.fund_date = fund.fund_date
     _report_progress(progress, 75, "Сопоставление жизненных циклов")
     target_rows = _build_target_rows(
@@ -1512,6 +2108,8 @@ def _prepare(
         well_history.histories,
         calculation_date,
         research_status,
+        criteria,
+        daily_rows,
     )
     _report_progress(progress, 85, "Подготовка итоговых строк")
     return target_rows, fund, well_history
@@ -1528,12 +2126,9 @@ def run_validate(
 
     _report_progress(progress, 0, "Старт проверки")
     operation_date = calculation_date or date.today()
-    actual_log_path = configure_logging(
-        log_path
-        or (paths.output.parent if paths.output is not None else paths.calculator.parent)
-        / "gdis_loader.log"
-    )
+    actual_log_path = configure_logging(log_path or paths.calculator.parent / "gdis_loader.log")
     report = _new_report(paths, operation_date)
+    report.criteria_snapshot = _criteria_snapshot(CriteriaConfig(), frozenset(), None)
     report.log_path = str(actual_log_path.resolve())
     _report_progress(progress, 10, "Проверка путей и структуры файлов")
     validation = validate_inputs(paths, progress, (10, 80))
@@ -1544,7 +2139,7 @@ def run_validate(
         int(values.get("fund_rows", 0) or 0) for values in report.field_coverage.values()
     )
     report.fund_total = report.fund_total_source
-    report.diagnostic_path = str(diagnostic_path(paths.output, paths.calculator).resolve())
+    report.diagnostic_path = str(diagnostic_path(None, paths.calculator).resolve())
     _report_progress(progress, 90, "Валидация результата")
     _write_report(report, Path(report.diagnostic_path))
     if validation.valid and not any(
@@ -1561,15 +2156,18 @@ def run_update(
     *,
     target_field: str,
     calculation_date: date | None = None,
+    criteria_config: CriteriaConfig | None = None,
+    config_source: str | Path | None = None,
+    criteria_explicit_fields: frozenset[str] = frozenset(),
 ) -> ServiceResult:
     """Run the shared ETL pipeline and write a safe copy of the calculator."""
 
     _report_progress(progress, 0, "Старт обновления")
     operation_date = calculation_date or date.today()
-    log_directory = paths.output.parent if paths.output is not None else paths.calculator.parent
-    actual_log_path = configure_logging(log_path or log_directory / "gdis_loader.log")
+    criteria = criteria_config or CriteriaConfig()
     report = _new_report(paths, operation_date, target_field.strip() or None)
-    report.log_path = str(actual_log_path.resolve())
+    report.criteria_snapshot = _criteria_snapshot(criteria, criteria_explicit_fields, config_source)
+    report.config_source = str(config_source) if config_source is not None else None
     LOGGER.info("Начало обновления; target_field=%s", target_field)
     _report_progress(progress, 10, "Проверка путей и структуры файлов")
     validation = validate_inputs(paths, progress, (10, 19))
@@ -1577,7 +2175,9 @@ def run_update(
     report.available_fields = validation.available_fields
     report.field_coverage = validation.field_coverage or {}
     if not validation.valid:
-        report.diagnostic_path = str(diagnostic_path(paths.output, paths.calculator).resolve())
+        actual_log_path = configure_logging(log_path or paths.calculator.parent / "gdis_loader.log")
+        report.log_path = str(actual_log_path.resolve())
+        report.diagnostic_path = str(diagnostic_path(None, paths.calculator).resolve())
         _write_report(report, Path(report.diagnostic_path))
         raise ServiceError(f"Проверка файлов не пройдена:\n{_validation_failure(validation)}")
     selected_field = next(
@@ -1600,10 +2200,20 @@ def run_update(
             locations=(SourceLocation(file=str(paths.fund.resolve())),),
         )
         _append_issues(report, (issue,))
-        report.diagnostic_path = str(diagnostic_path(paths.output, paths.calculator).resolve())
+        actual_log_path = configure_logging(log_path or paths.calculator.parent / "gdis_loader.log")
+        report.log_path = str(actual_log_path.resolve())
+        report.diagnostic_path = str(diagnostic_path(None, paths.calculator).resolve())
         _write_report(report, Path(report.diagnostic_path))
         raise ServiceError(issue.message)
     output_path = paths.output or default_output_path(paths.calculator, selected_field)
+    output_issues = validate_output_path(output_path, paths)
+    if output_issues:
+        raise ServiceError(
+            "Путь результата не прошел проверку:\n"
+            + "\n".join(f"- {format_diagnostic_issue(issue)}" for issue in output_issues)
+        )
+    actual_log_path = configure_logging(log_path or output_path.parent / "gdis_loader.log")
+    report.log_path = str(actual_log_path.resolve())
     effective_paths = replace(paths, output=output_path)
     report.target_field = selected_field
     report.input_paths["output"] = str(output_path.resolve())
@@ -1614,6 +2224,7 @@ def run_update(
             report,
             operation_date,
             selected_field,
+            criteria,
             progress,
         )
         if any(issue.severity is IssueSeverity.ERROR for issue in report.issues):

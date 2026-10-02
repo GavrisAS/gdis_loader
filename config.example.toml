@@ -10,3 +10,23 @@ output = ""
 
 [ui]
 last_directory = ""
+
+[criteria.insufficient_gdi]
+min_count = 2
+
+[criteria.productivity_decline]
+min_increase = 0.0
+
+[criteria.chlorine_growth]
+current_min_mg_dm3 = 2000.0
+delta_min_mg_dm3 = 1000.0
+
+[criteria.downhole]
+depth_threshold_m = 0.0
+
+[criteria.gdm]
+abs_delta_threshold = 5.0
+fallback_max_age_days = 365
+
+[criteria.gas_rate]
+working_day_min_rate = 0.0

@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from openpyxl.worksheet.table import Table
 
 from gdis_loader.domain.models import TARGET_FIELDS, SourcePaths
-from gdis_loader.validation.sources import validate_inputs
+from gdis_loader.validation.sources import validate_inputs, validate_output_path
 
 
 def _make_calculator(path: Path) -> None:
@@ -193,5 +193,7 @@ def test_output_cannot_overwrite_any_source_workbook(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     result = validate_inputs(replace(paths, output=paths.fund))
 
-    assert not result.valid
-    assert any(issue.code == "OUTPUT_EQUALS_INPUT" for issue in result.errors)
+    assert result.valid
+    assert any(
+        issue.code == "OUTPUT_EQUALS_INPUT" for issue in validate_output_path(paths.fund, paths)
+    )

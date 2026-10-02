@@ -35,7 +35,8 @@ def test_lnd_rule_is_tri_state(rfp: object, reliability: object, expected: bool 
     [(25, True), (0, False), (None, None), ("ошибка", None)],
 )
 def test_downhole_rule_preserves_zero_and_unknown(depth: object, expected: bool | None) -> None:
-    assert downhole_condition(depth) is expected
+    assert downhole_condition(depth, 0.0) is expected
+    assert downhole_condition(depth, 25.0) is (False if depth == 25 else expected)
 
 
 def test_duration_without_gdi_uses_launch_or_last_gdi_date() -> None:
@@ -59,4 +60,4 @@ def test_specific_gdi_count_is_defined_only_for_positive_count() -> None:
 
 @pytest.mark.parametrize(("count", "expected"), [(0, True), (1, True), (2, False), (8, False)])
 def test_insufficient_gdi_helper_uses_approved_threshold(count: int, expected: bool) -> None:
-    assert insufficient_gdi(count) is expected
+    assert insufficient_gdi(count, 2) is expected

@@ -7,9 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 
 import pytest
+from PySide6 import QtCore  # ty: ignore[unresolved-import, unused-ignore-comment]
 from PySide6.QtWidgets import QApplication  # ty: ignore[unresolved-import, unused-ignore-comment]
 
 import gdis_loader.gui.app as gui_app
+from gdis_loader.config import AppConfig, CriteriaConfig, load_config, save_config
 from gdis_loader.domain.models import DiagnosticIssue, IssueSeverity, LoadReport, SourcePaths
 from gdis_loader.progress import ProgressUpdate
 from gdis_loader.service import ServiceResult
@@ -157,6 +159,7 @@ def test_progress_bar_uses_full_width_row_below_actions(
 
     validate_button = window._validate_button.geometry()
     combo = window._field_combo.geometry()
+    criteria_button = window._criteria_button.geometry()
     update_button = window._update_button.geometry()
     progress_bar = window._progress_bar.geometry()
     central_widget = window.centralWidget()
@@ -166,7 +169,14 @@ def test_progress_bar_uses_full_width_row_below_actions(
     actions_item = outer_layout.itemAt(2)
     assert actions_item is not None
 
-    assert validate_button.right() < combo.left() < combo.right() < update_button.left()
+    assert (
+        validate_button.right()
+        < combo.left()
+        < combo.right()
+        < criteria_button.left()
+        < criteria_button.right()
+        < update_button.left()
+    )
     assert progress_bar.left() == outer_layout.contentsMargins().left()
     assert progress_bar.right() == (
         central_widget.width() - outer_layout.contentsMargins().right() - 1
@@ -235,6 +245,204 @@ def test_status_bar_contains_only_runtime_version(monkeypatch) -> None:  # type:
 
     assert window.statusBar().currentMessage() == "Версия 0.1"
     assert "Александр Гаврись" not in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_criteria_button_exists_idle_and_disables_while_busy(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    window = _window(monkeypatch)
+
+    assert window._criteria_button.text() == "Критерии…"
+    assert window._criteria_button.isEnabled()
+    window._set_busy(True)
+    assert not window._criteria_button.isEnabled()
+    window._set_busy(False)
+    assert window._criteria_button.isEnabled()
+    window.close()
+
+
+def test_criteria_button_opens_modal_dialog(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    opened: list[CriteriaConfig] = []
+
+    class _CancelledDialog:
+        criteria = None
+
+        def __init__(self, criteria: CriteriaConfig, _parent: object) -> None:
+            opened.append(criteria)
+
+        def exec(self) -> int:
+            return int(gui_app.QDialog.DialogCode.Rejected)
+
+    monkeypatch.setattr(gui_app, "CriteriaDialog", _CancelledDialog)
+    window = _window(monkeypatch)
+    window._criteria_button.click()
+
+    assert opened == [CriteriaConfig()]
+    window.close()
+
+
+def test_invalid_config_criteria_keeps_paths_and_blocks_update_until_repaired(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    class _MessageBox:
+        @staticmethod
+        def critical(*_args: object, **_kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr(gui_app, "QMessageBox", _MessageBox)
+    path = tmp_path / "config.toml"
+    original = (
+        '[files]\ncalculator = "calc.xlsx"\nfund = "fund.xlsx"\n'
+        "[criteria.gdm]\nabs_delta_threshold = -1\n"
+    )
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(gui_app, "config_path", lambda: path)
+
+    window = gui_app.LoaderWindow()
+    window._available_fields = ("Береговое",)
+    window._field_combo.addItem("Береговое")
+    window._field_combo.setCurrentIndex(0)
+    window._validation_fingerprint = window._source_fingerprint()
+    window._field_selected("Береговое")
+
+    assert window._fields["calculator"].text() == "calc.xlsx"
+    assert window._fields["fund"].text() == "fund.xlsx"
+    assert window._criteria_invalid
+    assert not window._update_button.isEnabled()
+    assert window._persist_config(show_error=False)
+    assert path.read_text(encoding="utf-8") == original
+    window.close()
+
+
+def test_criteria_dialog_is_modal_loads_values_and_only_edits_value_column() -> None:
+    dialog = gui_app.CriteriaDialog(
+        CriteriaConfig(chlorine_current_min_mg_dm3=2500.0, gdm_fallback_max_age_days=30)
+    )
+
+    assert dialog.isModal()
+    assert dialog.table.rowCount() == 8
+    assert dialog.table.columnCount() == 5
+    chlorine_item = dialog.table.item(2, 3)
+    assert chlorine_item is not None and chlorine_item.text() == "2500.0"
+    fallback_item = dialog.table.item(6, 3)
+    assert fallback_item is not None and fallback_item.text() == "30"
+    for row in range(dialog.table.rowCount()):
+        for column in range(dialog.table.columnCount()):
+            item = dialog.table.item(row, column)
+            assert item is not None
+            editable = bool(item.flags() & QtCore.Qt.ItemFlag.ItemIsEditable)
+            assert editable is (column == 3)
+    dialog.close()
+
+
+def test_criteria_defaults_button_changes_dialog_values_without_persisting() -> None:
+    dialog = gui_app.CriteriaDialog(CriteriaConfig(gdm_abs_delta_threshold=9.0))
+
+    dialog.defaults_button.click()
+
+    value_item = dialog.table.item(5, 3)
+    assert value_item is not None and value_item.text() == "5.0"
+    assert dialog.criteria is None
+    assert dialog.result() == int(gui_app.QDialog.DialogCode.Rejected)
+    dialog.close()
+
+
+def test_criteria_save_validates_and_accepts_values(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    dialog = gui_app.CriteriaDialog(CriteriaConfig())
+    value_item = dialog.table.item(0, 3)
+    assert value_item is not None
+    value_item.setText("3")
+
+    dialog._save()
+
+    assert dialog.criteria is not None
+    assert dialog.criteria.insufficient_gdi_min_count == 3
+    assert dialog.result() == int(gui_app.QDialog.DialogCode.Accepted)
+    dialog.close()
+
+
+def test_criteria_invalid_value_blocks_save_and_names_parameter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    messages: list[str] = []
+    monkeypatch.setattr(
+        gui_app.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    dialog = gui_app.CriteriaDialog(CriteriaConfig())
+    value_item = dialog.table.item(0, 3)
+    assert value_item is not None
+    value_item.setText("0")
+
+    dialog._save()
+
+    assert dialog.criteria is None
+    assert messages and "Минимальное количество" in messages[0]
+    dialog.close()
+
+
+def test_criteria_save_preserves_paths_and_current_field_validation(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(gui_app, "config_path", lambda: config_file)
+    save_config(
+        AppConfig(calculator="calc.xlsx", fund="fund.xlsx", research_status="status.xlsx"),
+        config_file,
+    )
+    window = gui_app.LoaderWindow()
+    window._operation_kind = "validate"
+    window._active_fingerprint = window._source_fingerprint()
+    window._finish_success(_result(("Береговое",)))
+    window._field_combo.setCurrentIndex(0)
+    assert window._update_button.isEnabled()
+
+    class _AcceptedDialog:
+        criteria = CriteriaConfig(gdm_abs_delta_threshold=7.0)
+
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(gui_app.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(gui_app, "CriteriaDialog", _AcceptedDialog)
+    previous_fingerprint = window._validation_fingerprint
+
+    window._edit_criteria()
+
+    loaded = load_config(config_file).config
+    assert loaded.calculator == "calc.xlsx"
+    assert loaded.fund == "fund.xlsx"
+    assert loaded.research_status == "status.xlsx"
+    assert loaded.criteria.gdm_abs_delta_threshold == 7.0
+    assert window._validation_fingerprint == previous_fingerprint
+    assert window._field_combo.currentText() == "Береговое"
+    assert window._update_button.isEnabled()
+    window.close()
+
+
+def test_criteria_cancel_does_not_persist(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    window = _window(monkeypatch)
+    persistence_calls: list[bool] = []
+    monkeypatch.setattr(
+        window,
+        "_persist_config",
+        lambda **_kwargs: persistence_calls.append(True) or True,
+    )
+
+    class _CancelledDialog:
+        criteria = CriteriaConfig(gdm_abs_delta_threshold=7.0)
+
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(gui_app.QDialog.DialogCode.Rejected)
+
+    monkeypatch.setattr(gui_app, "CriteriaDialog", _CancelledDialog)
+    window._edit_criteria()
+
+    assert not persistence_calls
+    assert window._criteria_config.gdm_abs_delta_threshold == 5.0
     window.close()
 
 
@@ -378,14 +586,18 @@ def test_update_passes_exactly_selected_field_to_service(monkeypatch) -> None:  
     window._validation_fingerprint = window._source_fingerprint()
     window._field_combo.setCurrentIndex(0)
     captured: list[str] = []
+    captured_criteria: list[CriteriaConfig] = []
+    window._criteria_config = CriteriaConfig(gdm_abs_delta_threshold=7.0)
 
     def fake_run_update(
         _paths: SourcePaths,
         *,
         progress=None,
         target_field: str,
+        **_criteria,
     ) -> ServiceResult:
         captured.append(target_field)
+        captured_criteria.append(_criteria["criteria_config"])
         return _result()
 
     monkeypatch.setattr(gui_app, "run_update", fake_run_update)
@@ -401,6 +613,7 @@ def test_update_passes_exactly_selected_field_to_service(monkeypatch) -> None:  
     actions[0](_paths(Path("/tmp")), lambda _update: None)
 
     assert captured == ["Пырейное"]
+    assert captured_criteria == [CriteriaConfig(gdm_abs_delta_threshold=7.0)]
     window.close()
 
 

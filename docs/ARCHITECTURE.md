@@ -2,63 +2,89 @@
 
 ## Назначение и ограничения
 
-Загрузчик проверяет комплект входных файлов, обнаруживает месторождения по фонду и обновляет лист `Данные` калькулятора для одного явно выбранного месторождения. Правила и открытые решения собраны в [`CUSTOMER_DECISIONS.md`](CUSTOMER_DECISIONS.md) и [`OPEN_QUESTIONS.md`](OPEN_QUESTIONS.md).
+Загрузчик проверяет набор входных файлов, обнаруживает месторождения по фонду и
+обновляет только лист `Данные` для одного явно выбранного месторождения. Текущие
+правила зафиксированы в [`CUSTOMER_DECISIONS.md`](CUSTOMER_DECISIONS.md).
 
-Writer меняет только XML листа `Данные` и связанный XML `tblData`. Формулы, настройки, расчетные листы, charts и прочие части калькулятора не переписываются.
+Writer читает схему через `openpyxl`, затем копирует исходный ZIP и патчит только
+XML листа `Данные` и связанный XML `tblData`. Формулы, настройки и остальные листы
+не мигрируют автоматически.
 
 ## Поток данных
 
 ```text
-Фонд ──────────────┐
-ГДИ ───────────────┤
-ЛХА ───────────────┤
-База истории ──────┼─> readers -> typed domain -> normalization -> lifecycle matching
-Статус исследований┤                                      -> transforms -> diagnostics
-Суточный рапорт ───┘                                                  |
-                                                                      v
-                                       OOXML patch: только Данные + tblData
+source workbooks -> readers -> typed domain -> normalization -> lifecycle match
+                 -> transforms + immutable criteria snapshot -> report/diagnostics
+                 -> OOXML patch: Данные + tblData
 ```
 
-### Проверка и обнаружение месторождений
+`validate` проверяет только inputs, discovers canonical fields from current fund,
+and reports coverage. Он не проверяет output path и не пишет в output directory.
+`update` требует explicit field; непосредственно перед записью валидирует
+extension, конфликт с input и policy каталога результата.
 
-`validate` не требует выбранного месторождения. Canonical список строится из текущего фонда, поскольку он задает target population; покрытие по ГДИ, ЛХА, базе истории и статусу исследований отображается отдельно. Отсутствие данных или sheet mapping диагностируется и не удаляет найденное по фонду месторождение из списка.
+Readers сохраняют исходные ячейки и provenance. Валидация и update используют
+один `calculation_date` на запуск. MONTH и YEAR сохраняют исходную precision,
+а расчётная effective date соответствует 1-му числу месяца / 1 января.
 
-`update` требует явно переданное поле и фильтрует target rows по нему и подтвержденным состояниям фонда: дающие, дающие газ, остановленные в отчетном периоде. Источники с листами по коду ЛУ используют extensible mappings, а не hardcoded UI scope.
+## Identity и lifecycle
 
-### Readers и domain
+`base_well_id` — физический root только для lineage поиска. Target identity
+включает field, root, lifecycle stage и canonical plast. `ЗБС`, `ПВЛГ`, `ПНЛГ`
+начинают новую history; `ПВР`, `КЛК` и прочие ГТМ не начинают. Перевод после
+`ПВЛГ`/`ПНЛГ` сохраняет отображаемый номер, если источник явно не меняет его.
+Последовательные current ЗБС получают детерминированные ordinals по fund и
+history. `ГС`/`МЗС` остаются отдельными histories. Ambiguous assignment не
+угадывается.
 
-- Readers извлекают raw values и точные `SourceLocation(file, sheet, cell)`; производственные источники не изменяются, макросы не исполняются.
-- `База по скважинам.xlsx` читается по mapping листов ЛУ; multirow schema и блоки ГТМ обнаруживаются по содержимому.
-- `Статус исследований_2026.xlsx` читается по mapping `БЛУ/ПЛУ/ХЛУ`; каждая строка сохраняет well, plast, research type, `PartialDate`, Delta и provenance. `-`, пустые и ошибки Excel не становятся нулем.
-- `PartialDate` сохраняет точность DAY/MONTH/YEAR. Для MONTH/YEAR день не придумывается.
-- `GdiKind` классифицирует ИД, ИД+КВД и КВД как валидные классы; освоение и отдельные `Pст`/`Pпл` исключаются. UNKNOWN не участвует в подсчетах.
+Plast canonicalizer — чистый parser: NFKC, separator/space normalization,
+основной номер слоя без sub-index, stable composites. Fuzzy matching отсутствует.
 
-### Identity и lifecycle matching
+## GDI и transformations
 
-`base_well_id` — физический корень только для поиска lineage. `target_well_id` сохраняет lifecycle suffix: `51`, `51_ЗБС`, `54_ПВЛГ`, `10403_МЗС` являются разными identity. Ведущие нули удаляются только в числовой части.
+Classifier принимает только normalized prefixes `ИД+КВД`, `ИД`, `КВД` в этом
+порядке. Сuffix words не меняют классификацию; substring matches не используются.
+Exact duplicate fingerprint включает все business attributes, но исключает
+source coordinates/provenance; duplicate provenance объединяется.
 
-Root-only строки ГДИ, ЛХА и статуса исследований после подтвержденной границы можно связать со stage только при однозначных поле, root, пласте и временном интервале. Partial-date окно, неразрешенная эквивалентность пласта и последовательные однотипные GTM без naming rule дают ambiguity. Неподтвержденные suffix не синтезируются.
+После matching/plast normalization/launch defaulting/dedupe `Количество ГДИ`
+считает valid rows с effective date `>= launch`. Productivity сравнивает numeric
+`a` только на valid GDI rows. GDM selection ограничена current field/lifecycle/
+plast и выбирает latest valid Delta либо fallback в пределах config window; Delta
+между собой не сравнивается. Debit берет positive/above-threshold daily values
+из месяца источника и усредняет их.
 
-Подтвержденные lifecycle boundaries включают ЗБС и ПВЛГ/перевод. ПВР, КЛК и иные ГТМ остаются вопросом до ответа заказчика.
+## Criteria config, GUI и отчет
 
-### Расчет и missing data
+`config.toml -> validated immutable CriteriaConfig -> snapshot на начало update`
+является единственным путём числовых thresholds в business transforms. Отсутствие
+criteria секций означает defaults; present invalid value блокирует безопасное
+обновление и показывается пользователю. UI `Критерии…` редактирует только
+значения и атомарно сохраняет их, сохраняя остальные config sections. Criteria
+change не инвалидирует source validation; следующий update получает новый
+snapshot.
 
-Дата расчета фиксируется один раз в начале операции и передается расчетам. В `Данные` записываются только подтвержденные значения. Для качественного признака `Нет` допускается, только если необходимые исходные значения присутствуют и распознаны; иначе при недоказанном результате ячейка пуста и есть diagnostic.
+JSON report сохраняет selected field, calculation date, config source, точные
+criteria/defaults/origins, агрегаты и diagnostics. Не добавляет production row
+dumps.
 
-Подтвержденные преобразования включают количество валидных ГДИ после launch, bounds для `Недостаточно ГДИС`, последние два коэффициента `a`, рост хлора, ЛНД tri-state, глубинность последнего валидного ГДИ и продолжительности. `Удельное количество ГДИ` заполняется только при положительном count и точной launch date. Проблемы ГДМ пока остаются пустыми: reader и candidate audit готовы, выбор актуальной строки ожидает ответ заказчика. `Дебит` также пуст до определения работающего дня.
+## Missing values и formula boundary
 
-Для совпадающих метрики и timestamp в ЛХА выбирается максимум валидных чисел; выбор сохраняет INFO и provenance.
+Качественные source fields при insufficient input остаются blank/unknown, не
+превращаются в `Нет`. Domain meaning — `μ=0` с исключением критерия из final `λ`.
+Формулы текущего workbook этому правилу не соответствуют полностью: `Критерии`
+формирует текст `Недостаточно данных`, а `Расчет!J` оставляет `λ` пустым при
+наличии такой строки. Исправление требует отдельной structural/formula migration;
+этот release её не делает. См. `STRUCTURAL_CALCULATOR_MIGRATION.md`.
 
-### Safe workbook writing
+## Safe write, GUI и release
 
-Writer читает схему калькулятора через `openpyxl`, затем копирует исходный ZIP и патчит только XML листа `Данные` и `tblData`. Это сохраняет остальные entries побайтно. Диапазоны таблицы и conditional formatting вычисляются по числу строк выбранного поля; namespace `x14ac` сохраняется.
+Output path проверяется только для update; `validate` не создаёт каталоги и не
+зависит от пути результата. GUI combo остается пустым до успешной проверки и не
+делает auto-selection. Input path change invalidates discovery; output/criteria
+change не invalidates. Progress достигает 100 только при успехе.
 
-### GUI, config и CLI
-
-GUI сначала проверяет файлы, показывает обнаруженные по фонду месторождения без автоселекции, затем разрешает update после явного выбора. Изменение любого входного пути сбрасывает результат проверки; изменение output path его не сбрасывает. Progress приходит от service checkpoints и достигает 100 только при успехе. Статусы показывают число и имена полей, выбранный scope и итог операции.
-
-Последние пути, включая `research_status`, хранятся в `config.toml`. В frozen сборке он находится рядом с EXE, в разработке — в корне репозитория. CLI `validate` выводит найденные поля; `update` требует `--field`.
-
-### Diagnostics и release
-
-Каждая операция формирует JSON и текстовый лог с агрегатами, provenance и диагностикой без production row dumps. Утилитарные проверки выполняются командами из `Makefile`; релизная сборка использует Windows PyInstaller `onedir`, frozen smoke-test и tag формата `vMAJOR.MINOR` на успешном push в `main`.
+Каждая операция создаёт text log и JSON report. Windows release использует
+GitHub Actions, Python 3.14, `uv sync --locked`, quality checks, PyInstaller
+`onedir`, frozen version smoke-test и автоматически тегируется только после
+успешного push в `main`.

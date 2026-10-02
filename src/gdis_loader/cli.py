@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from gdis_loader.config import ConfigValidationError, config_path, load_config
 from gdis_loader.domain.models import SourcePaths
 from gdis_loader.service import ServiceError, run_update, run_validate
 
@@ -69,13 +70,23 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     paths = _source_paths(args)
     try:
-        result = (
-            run_validate(paths, args.log)
-            if args.command == "validate"
-            else run_update(paths, args.log, target_field=args.target_field)
-        )
+        if args.command == "validate":
+            result = run_validate(paths, args.log)
+        else:
+            loaded_config = load_config(config_path()).config
+            result = run_update(
+                paths,
+                args.log,
+                target_field=args.target_field,
+                criteria_config=loaded_config.criteria,
+                config_source=config_path(),
+                criteria_explicit_fields=loaded_config.criteria_explicit_fields,
+            )
     except ServiceError as error:
         print(str(error))
+        raise SystemExit(2) from error
+    except ConfigValidationError as error:
+        print(f"Ошибка конфигурации: {error}")
         raise SystemExit(2) from error
     print(result.summary())
     if args.command == "validate" and result.has_errors:

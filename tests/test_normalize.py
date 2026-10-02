@@ -46,12 +46,12 @@ def test_mzs_zbs_and_pvlg_are_distinct_target_identities_with_shared_root() -> N
         assert child.target_well_id == f"{root}_{variant}"
 
 
-def test_sequential_zbs_suffix_is_preserved_without_assuming_event_number() -> None:
+def test_sequential_zbs_suffix_is_preserved_and_recognized() -> None:
     normalized = normalize_well_id("051_ЗБС2")
 
     assert normalized.base_well_id == "51"
     assert normalized.target_well_id == "51_ЗБС2"
-    assert normalized.recognized_variant is None
+    assert normalized.recognized_variant == "ЗБС"
 
 
 @pytest.mark.parametrize("value", ["ПК₁", "ПК-1", "ПК 1"])
@@ -59,10 +59,29 @@ def test_plast_cosmetic_variants_match(value: str) -> None:
     assert normalize_plast(value) == "ПК1"
 
 
-def test_plast_numeric_components_remain_significant() -> None:
-    assert normalize_plast("ПК-19-2") == normalize_plast("ПК19(2)")
-    assert normalize_plast("ПК-19-2") != normalize_plast("ПК19-20")
+def test_plast_normalization_discards_sublayers_and_keeps_combinations() -> None:
+    assert normalize_plast("ПК-19-2") == normalize_plast("ПК19(2)") == "ПК19"
+    assert normalize_plast("ПК19-20") == "ПК19+20"
+    assert normalize_plast("ПК19-2+20") == "ПК19+20"
+    assert normalize_plast("ПК14-1, ПК15-1") == "ПК14+15"
+    assert normalize_plast("ПК14+15") == "ПК14+15"
+    assert normalize_plast("ПК14") != normalize_plast("ПК14+15")
 
 
 def test_actual_lha_superscript_plast_is_supported() -> None:
-    assert normalize_plast("ПК₁₉²") == "ПК19-2"
+    assert normalize_plast("ПК₁₉²") == "ПК19"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("ПК17-2-1", "ПК17"),
+        ("ПК14-1", "ПК14"),
+        ("ПК19-20", "ПК19+20"),
+        ("ПК14+15", "ПК14+15"),
+        ("ПК14-1, ПК15-1", "ПК14+15"),
+        (" ПК 15 – 1 + ПК14-2 ", "ПК14+15"),
+    ],
+)
+def test_customer_plast_examples(raw: str, expected: str) -> None:
+    assert normalize_plast(raw) == expected

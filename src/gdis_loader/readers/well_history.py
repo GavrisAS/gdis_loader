@@ -41,6 +41,7 @@ _GTM_HEADER_RE = re.compile(r"^ГТМ\s*(\d+)$", re.IGNORECASE)
 _EVENT_KIND_MAP = {
     "ЗБС": WellEventKind.ZBS,
     "ПВЛГ": WellEventKind.PVLG,
+    "ПНЛГ": WellEventKind.PNLG,
     "ПВР": WellEventKind.PVR,
     "КЛК": WellEventKind.KLK,
 }
@@ -343,13 +344,32 @@ def read_well_history(
                     block_number=block_number,
                 )
                 events.append(event)
-                if kind in {WellEventKind.ZBS, WellEventKind.PVLG} and event_date is not None:
+                if (
+                    kind
+                    in {
+                        WellEventKind.ZBS,
+                        WellEventKind.PVLG,
+                        WellEventKind.PNLG,
+                    }
+                    and event_date is not None
+                ):
+                    zbs_ordinal = (
+                        sum(stage.event_kind is WellEventKind.ZBS for stage in stages) + 1
+                        if kind is WellEventKind.ZBS
+                        else None
+                    )
+                    stage_identity = (
+                        f"{physical_root}_ЗБС"
+                        + (str(zbs_ordinal) if zbs_ordinal and zbs_ordinal > 1 else "")
+                        if zbs_ordinal is not None
+                        else None
+                    )
                     stages.append(
                         WellStage(
                             field_name=field_name,
                             physical_root=physical_root,
                             source_display_well=display_well,
-                            target_well_id=None,
+                            target_well_id=stage_identity,
                             plast=event_plast,
                             event_kind=kind,
                             started_at=event_date,

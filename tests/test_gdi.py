@@ -6,6 +6,7 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from gdis_loader.readers.gdi import read_gdi
+from gdis_loader.transforms.rules import downhole_condition
 
 GDI_HEADERS = [
     "Месторождение",
@@ -65,9 +66,9 @@ def test_gdi_preserves_raw_type_classifies_unknown_and_keeps_depth_zero(tmp_path
     records, issues = read_gdi(path)
 
     assert records[0].research_type == "КВУ"
-    assert records[0].is_downhole_measurement is False
+    assert downhole_condition(records[0].depth_raw_value, 0.0) is False
     assert records[0].depth_raw_value == 0
     assert records[1].research_type == "ИД"
-    assert records[1].is_downhole_measurement is None
+    assert downhole_condition(records[1].depth_raw_value, 0.0) is None
     unknown = next(issue for issue in issues if issue.code == "GDI_KIND_UNKNOWN")
     assert unknown.locations[0].cell == "D2"

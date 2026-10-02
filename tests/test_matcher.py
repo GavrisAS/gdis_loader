@@ -31,7 +31,7 @@ def _fund(*, well: str = "011", field: str = "Береговой", hint: str | N
         fund_date=date(2026, 8, 1),
         source_row=12,
         source_column="C",
-        object_plast_hint=hint,
+        object_plast_hint=normalize_plast(hint),
     )
 
 
@@ -132,7 +132,7 @@ def test_object_hint_selects_current_plast_without_fuzzy_matching() -> None:
 
     assert result.status is MatchStatus.MATCHED
     assert result.record is not None
-    assert result.record.normalized_plast == "ПК19-20"
+    assert result.record.normalized_plast == "ПК19+20"
 
 
 def test_same_latest_date_with_incompatible_completions_is_ambiguous() -> None:

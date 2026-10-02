@@ -109,3 +109,54 @@ def test_schema_detects_two_row_header_and_rejects_broken_dynamic_block(tmp_path
     finally:
         valid_workbook.close()
         invalid_workbook.close()
+
+
+def test_pnlg_creates_new_history_but_keeps_source_well_number(tmp_path: Path) -> None:
+    path = tmp_path / "pnlg.xlsx"
+    _write_history(path)
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path)
+    sheet = workbook["БЛУ"]
+    sheet["T3"] = "ПНЛГ"
+    sheet["U3"] = datetime(2024, 3, 1)
+    sheet["V3"] = "ПК3"
+    sheet["Z3"] = None
+    sheet["AA3"] = None
+    workbook.save(path)
+    workbook.close()
+
+    result = read_well_history(path, "Береговое")
+    history = result.histories[0]
+    pnlg = history.stages[-1]
+
+    assert pnlg.event_kind is WellEventKind.PNLG
+    assert pnlg.target_well_id is None
+    assert pnlg.source_display_well == "051"
+    assert pnlg.plast == "ПК3"
+
+
+def test_sequential_zbs_reader_assigns_stable_ordinals(tmp_path: Path) -> None:
+    path = tmp_path / "sequential-zbs.xlsx"
+    _write_history(path)
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path)
+    sheet = workbook["БЛУ"]
+    sheet["N3"] = "ЗБС"
+    sheet["O3"] = datetime(2022, 7, 1)
+    sheet["P3"] = "ПК1"
+    sheet["T3"] = None
+    sheet["U3"] = None
+    sheet["V3"] = None
+    sheet["Z3"] = None
+    sheet["AA3"] = None
+    workbook.save(path)
+    workbook.close()
+
+    result = read_well_history(path, "Береговое")
+    zbs_stages = tuple(
+        stage for stage in result.histories[0].stages if stage.event_kind is WellEventKind.ZBS
+    )
+
+    assert [stage.target_well_id for stage in zbs_stages] == ["51_ЗБС", "51_ЗБС2"]

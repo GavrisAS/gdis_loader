@@ -160,6 +160,7 @@ def read_daily_report(
                     raw_field_name=raw_field,
                     raw_well_name=raw_well,
                     base_well_id=normalized.base_well_id if normalized else None,
+                    target_well_id=normalized.target_well_id if normalized else None,
                     source_row=row_number,
                     daily_values=tuple(daily_values),
                     source_file=source_file,

@@ -436,6 +436,11 @@ def _verify_output(output: Path, rows: tuple[TargetRow, ...]) -> None:
                         raise TargetWorkbookError(
                             f"Строка {row_number}, поле {name!r} записано неверно."
                         )
+                elif isinstance(expected_value, date) and isinstance(actual_value, datetime):
+                    if actual_value.date() != expected_value:
+                        raise TargetWorkbookError(
+                            f"Строка {row_number}, поле {name!r} записано неверно."
+                        )
                 elif actual_value != expected_value:
                     raise TargetWorkbookError(
                         f"Строка {row_number}, поле {name!r} записано неверно."

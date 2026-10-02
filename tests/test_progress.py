@@ -42,6 +42,7 @@ def _stub_pipeline(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     )
     monkeypatch.setattr(service, "read_gdi", lambda _path: ((), ()))
     monkeypatch.setattr(service, "read_lha", lambda _path: ((), ()))
+    monkeypatch.setattr(service, "read_daily_report", lambda _path: ((), ()))
     monkeypatch.setattr(service, "read_research_status", lambda *_args: ((), ()))
     monkeypatch.setattr(service, "read_well_history", lambda *_args: WellHistoryParseResult(()))
     monkeypatch.setattr(service, "_build_target_rows", lambda *_args: ())
@@ -83,6 +84,7 @@ def test_update_progress_reports_writer_checkpoint_and_completion(
         45,
         60,
         68,
+        72,
         75,
         85,
         90,

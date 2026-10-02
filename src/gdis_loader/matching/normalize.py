@@ -8,10 +8,13 @@ from dataclasses import dataclass
 
 _SPACE_RE = re.compile(r"\s+")
 _NUMERIC_RE = re.compile(r"^(?P<digits>\d+)(?:\.0+)?$")
-_KNOWN_VARIANT_RE = re.compile(r"^(ЗБС|ПВЛГ|КЛК|МЗС|ГС)(?:$|[ _(\-](?!\d).*)$", re.IGNORECASE)
+_KNOWN_VARIANT_RE = re.compile(
+    r"^(ЗБС|ПВЛГ|ПНЛГ|ПВР|КЛК|МЗС|ГС)(?:\s*\d+)?(?:$|[ _(\-](?!\d).*)$",
+    re.IGNORECASE,
+)
 _UNDERSCORE_SUFFIX_RE = re.compile(r"^(?P<number>\d+)\s*_\s*(?P<suffix>.+)$")
 _SPACE_VARIANT_RE = re.compile(
-    r"^(?P<number>\d+)\s+(?P<suffix>(?:ЗБС|ПВЛГ|КЛК|МЗС|ГС)(?=$|[\s_\d(]).*)$",
+    r"^(?P<number>\d+)\s+(?P<suffix>(?:ЗБС|ПВЛГ|ПНЛГ|ПВР|КЛК|МЗС|ГС)(?=$|[\s_\d(]).*)$",
     re.IGNORECASE,
 )
 _GAS_BRANCH_RE = re.compile(r"^(?P<number>\d+)\s+ГС(?:$|[\s_(\d]).*$", re.IGNORECASE)
@@ -124,11 +127,12 @@ def _replace_plast_digits(text: str) -> str:
 
 
 def normalize_plast(value: object) -> str | None:
-    """Canonicalize cosmetic plastic spelling without collapsing objects.
+    """Canonicalize primary plast numbers and discard subordinate suffixes.
 
-    ``ПК1``, ``ПК-1``, ``ПК 1`` and ``ПК₁`` become ``ПК1``.  Hyphens between
-    numeric components remain significant, so ``ПК-19-2`` and ``ПК19-20``
-    remain different values.
+    A one-digit hyphen component is a sublayer (``ПК17-2-1`` -> ``ПК17``).
+    A two-or-more digit hyphen component is a second primary plast
+    (``ПК19-20`` -> ``ПК19+20``). Comma/plus separated values are parsed one
+    primary at a time and returned in stable numeric order.
     """
 
     if value is None:
@@ -136,20 +140,35 @@ def normalize_plast(value: object) -> str | None:
     text = _clean_text(value)
     if not text:
         return None
-    text = _replace_plast_digits(text)
-    text = unicodedata.normalize("NFKC", text).upper()
-    text = text.replace("–", "-").replace("—", "-")
+    text = unicodedata.normalize("NFKC", _replace_plast_digits(text)).upper()
+    text = text.replace("–", "-").replace("—", "-").replace("−", "-")
     text = _SPACE_RE.sub(" ", text)
-    text = re.sub(r"\s*([\-+/()])\s*", r"\1", text)
+    text = re.sub(r"\s*([,+/()\-])\s*", r"\1", text)
     text = _PLAST_PREFIX_RE.sub(r"\g<prefix>", text)
     text = _PLAST_SPACE_RE.sub(r"\g<prefix>", text)
+    if text.startswith("ПК"):
+        primary = _primary_pc_numbers(text)
+        if primary:
+            ordered = sorted(set(primary))
+            return "ПК" + "+".join(str(number) for number in ordered)
     parenthesized = _PLAST_PAREN_RE.fullmatch(text)
     if parenthesized is not None:
-        text = (
-            f"{parenthesized.group('prefix')}{parenthesized.group('base')}"
-            f"-{parenthesized.group('part')}"
-        )
+        text = f"{parenthesized.group('prefix')}{parenthesized.group('base')}"
     return text
+
+
+def _primary_pc_numbers(text: str) -> list[int]:
+    numbers: list[int] = []
+    for component in re.split(r"[+,]", text):
+        match = re.match(r"^(?:ПК)?(?P<primary>\d+)(?P<tail>.*)$", component)
+        if match is None:
+            continue
+        numbers.append(int(match.group("primary")))
+        tail = match.group("tail")
+        composite = re.match(r"^-(?P<primary>\d{2,})(?:-|$)", tail)
+        if composite is not None:
+            numbers.append(int(composite.group("primary")))
+    return numbers
 
 
 def extract_exact_plast_hint(object_name: str) -> str | None:
@@ -159,6 +178,6 @@ def extract_exact_plast_hint(object_name: str) -> str | None:
     if match is None:
         return None
     candidate = normalize_plast(match.group("plast"))
-    if candidate is None or not re.fullmatch(r"ПК\d+(?:-\d+)*", candidate):
+    if candidate is None or not re.fullmatch(r"ПК\d+(?:\+\d+)*", candidate):
         return None
     return candidate

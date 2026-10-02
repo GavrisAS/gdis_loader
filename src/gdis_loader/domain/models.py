@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
@@ -60,6 +61,7 @@ class WellEventKind(StrEnum):
     INITIAL = "INITIAL"
     ZBS = "ЗБС"
     PVLG = "ПВЛГ"
+    PNLG = "ПНЛГ"
     PVR = "ПВР"
     KLK = "КЛК"
     OTHER = "OTHER"
@@ -98,11 +100,9 @@ TARGET_FIELDS: tuple[str, ...] = (
 
 INTENTIONALLY_BLANK_FIELDS: tuple[str, ...] = (
     "Расходомер",
-    "Проблемы ГДМ",
     "Последний АДД",
     "Не проведен АДД",
     "Техническая возможность",
-    "Дебит",
     "Manual μ",
 )
 
@@ -333,19 +333,30 @@ class GdiRecord:
     productivity_a_raw: CellValue = None
     productivity_a_value: float | None = None
     productivity_a_cell: str | None = None
+    productivity_b_raw: CellValue = None
+    productivity_b_value: float | None = None
+    productivity_b_cell: str | None = None
+    source_rows: tuple[int, ...] = ()
 
     @property
     def locations(self) -> tuple[SourceLocation, ...]:
         """Return identity/date cells useful for matching diagnostics."""
 
-        return source_locations(
-            self.source_file,
-            self.source_sheet,
-            self.field_cell,
-            self.well_cell,
-            self.plast_cell,
-            self.date_cell,
+        cells = (self.field_cell, self.well_cell, self.plast_cell, self.date_cell)
+        if not self.source_file:
+            return ()
+        return tuple(
+            SourceLocation(self.source_file, self.source_sheet, coordinate)
+            for row in (self.source_rows or (self.source_row,))
+            for cell in cells
+            if (coordinate := self._cell_at_row(cell, row)) is not None
         )
+
+    @staticmethod
+    def _cell_at_row(cell: str | None, row: int) -> str | None:
+        if cell is None:
+            return None
+        return re.sub(r"\d+$", str(row), cell)
 
     @property
     def completion_key(self) -> tuple[str | None, str | None, str | None]:
@@ -358,22 +369,19 @@ class GdiRecord:
         )
 
     @property
-    def is_downhole_measurement(self) -> bool | None:
-        """Return the confirmed per-study depth classification when numeric."""
-
-        if self.depth_value is None:
-            return None
-        return self.depth_value > 0
-
-    @property
     def lnd_locations(self) -> tuple[SourceLocation, ...]:
         """Return both exact cells needed for the LND rule, including blanks."""
 
-        return source_locations(
-            self.source_file,
-            self.source_sheet,
-            self.rfp_cell,
-            self.lnd_reliability_cell,
+        if not self.source_file:
+            return ()
+        return tuple(
+            SourceLocation(self.source_file, self.source_sheet, cell)
+            for row in (self.source_rows or (self.source_row,))
+            for cell in (
+                self._cell_at_row(self.rfp_cell, row),
+                self._cell_at_row(self.lnd_reliability_cell, row),
+            )
+            if cell is not None
         )
 
 
@@ -448,12 +456,6 @@ class ResearchStatusRecord:
     delta_cell: str
 
     @property
-    def is_adaptation_problem(self) -> bool | None:
-        """Return the per-row customer rule, preserving missing/invalid deltas."""
-
-        return None if self.delta_value is None else abs(self.delta_value) > 5
-
-    @property
     def locations(self) -> tuple[SourceLocation, ...]:
         return source_locations(
             self.source_file,
@@ -504,6 +506,7 @@ class DailyTelemetryRow:
     field_cell: str | None = None
     well_cell: str | None = None
     daily_cells: tuple[str, ...] = ()
+    target_well_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +601,8 @@ class LoadReport:
     input_paths: dict[str, str | None]
     fund_date: date | None = None
     calculation_date: date | None = None
+    criteria_snapshot: dict[str, Any] = field(default_factory=dict)
+    config_source: str | None = None
     fund_total: int = 0
     fund_total_source: int = 0
     target_field: str | None = None
@@ -620,6 +625,12 @@ class LoadReport:
     well_history_event_counts: dict[str, int] = field(default_factory=dict)
     well_history_date_precision_counts: dict[str, int] = field(default_factory=dict)
     gdi_kind_counts: dict[str, int] = field(default_factory=dict)
+    gdi_raw_kind_counts: dict[str, int] = field(default_factory=dict)
+    gdi_raw_record_count: int = 0
+    gdi_deduplicated_record_count: int = 0
+    gdi_exact_duplicates_collapsed: int = 0
+    gdi_nonvalid_labels: dict[str, int] = field(default_factory=dict)
+    gdi_pre_launch_excluded: int = 0
     gdi_kind_unknown: int = 0
     gdi_count_filled: int = 0
     insufficient_gdi_yes: int = 0
@@ -642,11 +653,17 @@ class LoadReport:
     gdm_target_candidate_rows: int = 0
     gdm_unique_candidate_identities: int = 0
     gdm_multiple_candidate_identities: int = 0
+    gdm_fallback_selected: int = 0
+    gdm_stale_fallback_rejected: int = 0
+    gdm_filled_yes: int = 0
+    gdm_filled_no: int = 0
+    gdm_blank: int = 0
     gdm_rows_per_target: dict[str, int] = field(default_factory=dict)
     field_provenance: list[dict[str, Any]] = field(default_factory=list)
     lha_duplicate_resolved_max: int = 0
     launch_date_filled: int = 0
     launch_date_incomplete: int = 0
+    launch_date_defaulted: int = 0
     launch_date_missing: int = 0
     lnd_true: int = 0
     lnd_false: int = 0
@@ -654,6 +671,9 @@ class LoadReport:
     downhole_yes: int = 0
     downhole_no: int = 0
     downhole_unknown: int = 0
+    debit_filled: int = 0
+    debit_blank: int = 0
+    debit_valid_day_count: int = 0
     warnings: list[str] = field(default_factory=list)
     issues: list[DiagnosticIssue] = field(default_factory=list)
     intentionally_blank_fields: tuple[str, ...] = INTENTIONALLY_BLANK_FIELDS

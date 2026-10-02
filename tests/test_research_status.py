@@ -9,6 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from openpyxl import Workbook
 
 from gdis_loader.readers.research_status import read_research_status
+from gdis_loader.transforms.research_status import gdm_problem
 
 
 def _make_status(path: Path) -> None:
@@ -75,7 +76,10 @@ def test_reader_maps_multirow_headers_preserves_delta_states_and_provenance(
 
     assert len(records) == 7
     assert [item.delta_value for item in records] == [5, 5.01, -5.1, None, None, None, 7]
-    assert [item.is_adaptation_problem for item in records] == [
+    assert [
+        gdm_problem(item.delta_value, 5.0) if item.delta_value is not None else None
+        for item in records
+    ] == [
         False,
         True,
         True,
@@ -105,5 +109,5 @@ def test_reader_retains_formula_without_cached_value_as_unknown(tmp_path: Path) 
     formula_record = records[-1]
     assert formula_record.delta_value is None
     assert formula_record.delta_formula_without_cache
-    assert formula_record.is_adaptation_problem is None
+    assert formula_record.delta_value is None
     assert any(issue.code == "GDM_DELTA_FORMULA_CACHE_MISSING" for issue in issues)

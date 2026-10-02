@@ -107,7 +107,7 @@ class GdiIndex:
                 for record in root_only
                 if (resolution := resolve_lifecycle_stage(fund_well, record, histories)).stage
                 is not None
-                and _stage_target_identity(resolution.stage) == target_id
+                and _stage_target_identity(resolution.stage, histories) == target_id
             )
             return tuple(dict.fromkeys((*exact, *resolved)))
 
@@ -183,7 +183,7 @@ def _latest_by_identity_and_plast(records: tuple[GdiRecord, ...]) -> tuple[GdiRe
     return tuple(latest_records)
 
 
-def _stage_target_identity(stage: WellStage) -> str | None:
+def _stage_target_identity(stage: WellStage, histories: tuple[WellHistory, ...] = ()) -> str | None:
     """Return an established identity or its event-based stage label."""
 
     target_well_id = stage.target_well_id
@@ -191,8 +191,26 @@ def _stage_target_identity(stage: WellStage) -> str | None:
         return target_well_id
     if stage.event_kind.value == "INITIAL":
         return stage.physical_root
-    if stage.event_kind.value in {"ЗБС", "ПВЛГ"}:
-        return f"{stage.physical_root}_{stage.event_kind.value}"
+    if stage.event_kind.value == "ЗБС":
+        zbs_stages = tuple(
+            sorted(
+                (
+                    candidate
+                    for history in histories
+                    if history.physical_root == stage.physical_root
+                    and history.field_name == stage.field_name
+                    for candidate in history.stages
+                    if candidate.event_kind.value == "ЗБС"
+                ),
+                key=lambda candidate: candidate.stage_sequence,
+            )
+        )
+        ordinal = next(
+            (index + 1 for index, candidate in enumerate(zbs_stages) if candidate == stage), 1
+        )
+        return f"{stage.physical_root}_ЗБС" + (str(ordinal) if ordinal > 1 else "")
+    if stage.event_kind.value in {"ПВЛГ", "ПНЛГ"}:
+        return stage.physical_root
     return None
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import gdis_loader.service as service
+from gdis_loader.config import CriteriaConfig
 from gdis_loader.domain.models import (
     DatePrecision,
     DiagnosticIssue,
@@ -64,6 +65,7 @@ def _stub_empty_update(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(service, "read_fund", lambda _path: FundParseResult((), None, None))
     monkeypatch.setattr(service, "read_gdi", lambda _path: ((), ()))
     monkeypatch.setattr(service, "read_lha", lambda _path: ((), ()))
+    monkeypatch.setattr(service, "read_daily_report", lambda _path: ((), ()))
     monkeypatch.setattr(service, "read_research_status", lambda *_args: ((), ()))
     monkeypatch.setattr(service, "read_well_history", lambda *_args: WellHistoryParseResult(()))
     monkeypatch.setattr(service, "_build_target_rows", lambda *_args: ())
@@ -163,6 +165,38 @@ def test_validate_does_not_claim_that_rows_were_written(tmp_path: Path) -> None:
     assert result.report.rows_written == 0
     assert not (tmp_path / "result.xlsx").exists()
     assert Path(result.report.diagnostic_path or "").is_file()
+
+
+def test_validate_ignores_output_path_and_does_not_create_its_directory(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    output_directory = tmp_path / "not-created"
+    paths = replace(_paths(tmp_path), output=output_directory / "invalid.csv")
+    monkeypatch.setattr(
+        service,
+        "validate_inputs",
+        lambda *_args: ValidationResult((), ("Береговое",), {"Береговое": {"fund_rows": 1}}),
+    )
+
+    result = run_validate(paths, tmp_path / "validate.log")
+
+    assert not result.has_errors
+    assert result.report.available_fields == ("Береговое",)
+    assert not output_directory.exists()
+
+
+def test_update_rejects_output_before_creating_path_side_effects(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    _stub_empty_update(monkeypatch)
+    output_directory = tmp_path / "not-created"
+    log_path = output_directory / "update.log"
+    paths = replace(_paths(tmp_path), output=output_directory / "bad.csv")
+
+    with pytest.raises(service.ServiceError, match="Путь результата"):
+        service.run_update(paths, log_path, target_field="Пырейное")
+
+    assert not output_directory.exists()
 
 
 def test_default_output_name_is_field_specific_and_safe(tmp_path: Path) -> None:
@@ -512,7 +546,7 @@ def test_no_gdi_with_day_launch_writes_zero_count_and_duration_with_provenance()
     assert count_provenance["locations"] == [SourceLocation("history.xlsx", "БЛУ", "C3").to_dict()]
 
 
-def test_no_gdi_with_month_launch_has_no_synthetic_duration_date() -> None:
+def test_no_gdi_with_month_launch_uses_first_day_and_duration() -> None:
     fund_well = _fund_identity("Береговое")
     report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
 
@@ -525,12 +559,48 @@ def test_no_gdi_with_month_launch_has_no_synthetic_duration_date() -> None:
         date(2026, 10, 1),
     )
 
-    assert rows[0].launch_date is None
-    assert rows[0].duration_without_gdi is None
-    assert any(issue.code == "NO_GDI_LAUNCH_PRECISION" for issue in report.issues)
+    assert rows[0].launch_date == date(2020, 7, 1)
+    assert rows[0].duration_without_gdi == (date(2026, 10, 1) - date(2020, 7, 1)).days / 365
 
 
-def test_gdm_status_row_is_audited_but_target_stays_blank() -> None:
+@pytest.mark.parametrize("boundary", [WellEventKind.PVLG, WellEventKind.PNLG])
+def test_pvlg_and_pnlg_start_new_history_without_changing_well_number(
+    boundary: WellEventKind,
+) -> None:
+    fund_well = replace(_fund_identity("Береговое"), object_plast_hint="ПК2")
+    initial = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
+    event_stage = replace(
+        initial.stages[0],
+        target_well_id=None,
+        plast="ПК2",
+        event_kind=boundary,
+        started_at=PartialDate(2023, 6, None, DatePrecision.MONTH),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "O3"),
+    )
+    history = replace(initial, stages=(initial.stages[0], event_stage))
+    record = _gdi_identity(
+        "Береговое",
+        raw_plast="ПК2",
+        when=datetime(2023, 6, 15),
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((record,)),
+        LhaIndex(()),
+        report,
+        (history,),
+        date(2026, 10, 1),
+    )
+
+    assert rows[0].well == "22"
+    assert rows[0].plast == "ПК2"
+    assert rows[0].launch_date == date(2023, 6, 1)
+
+
+def test_gdm_status_row_fills_problem_flag_from_latest_valid_delta() -> None:
     fund_well = _fund_identity("Береговое")
     gdi_record = replace(_gdi_identity("Береговое", when=datetime(2025, 1, 1)), source_row=200)
     initial_history = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
@@ -575,13 +645,15 @@ def test_gdm_status_row_is_audited_but_target_stays_blank() -> None:
         (status_record,),
     )
 
-    assert rows[0].gdm_problems is None
+    assert rows[0].gdm_problems == "Да"
     assert rows[0].well == "22_ЗБС"
     assert report.gdm_rows_per_target == {"22_ЗБС": 1}
     assert report.gdm_unique_candidate_identities == 1
     assert report.gdm_multiple_candidate_identities == 0
-    issue = next(issue for issue in report.issues if issue.code == "GDM_CURRENT_ROW_UNRESOLVED")
-    assert SourceLocation("status.xlsx", "АР_таблица_БЛУ", "J12") in issue.locations
+    provenance = next(item for item in report.field_provenance if item["field"] == "Проблемы ГДМ")
+    assert (
+        SourceLocation("status.xlsx", "АР_таблица_БЛУ", "J12").to_dict() in provenance["locations"]
+    )
 
 
 def test_mzs_is_a_distinct_target_identity_from_parent() -> None:
@@ -705,9 +777,9 @@ def test_duration_without_missing_gdi_class_stays_blank_with_diagnostic() -> Non
         calculation,
     )
 
-    assert rows[0].duration_without_id is None
+    assert rows[0].duration_without_id == (calculation - date(2020, 1, 1)).days / 365
     assert rows[0].duration_without_kvd == (calculation - date(2025, 3, 1)).days / 365
-    assert any(issue.code == "NO_ID_HISTORY" for issue in report.issues)
+    assert any(issue.code == "NO_ID_HISTORY_USING_LAUNCH_DATE" for issue in report.issues)
 
 
 def test_productivity_uses_last_two_numeric_coefficients_and_records_provenance() -> None:
@@ -745,6 +817,46 @@ def test_productivity_uses_last_two_numeric_coefficients_and_records_provenance(
         "E101",
         "AA101",
     ]
+
+
+def test_productivity_ignores_newer_non_gdi_a_and_injects_minimum_increase() -> None:
+    fund_well = _fund_identity("Береговое")
+    previous = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 1, 1), row=100),
+        productivity_a_value=0.8,
+        productivity_a_cell="AA100",
+        source_row=100,
+    )
+    current = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 2, 1), row=101),
+        productivity_a_value=0.9,
+        productivity_a_cell="AA101",
+        source_row=101,
+    )
+    non_gdi = replace(
+        _gdi_identity("Береговое", when=datetime(2025, 3, 1), row=102),
+        gdi_kind=GdiKind.EXCLUDED,
+        productivity_a_value=100.0,
+        productivity_a_cell="AA102",
+        source_row=102,
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((previous, current, non_gdi)),
+        LhaIndex(()),
+        report,
+        (_history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY)),),
+        date(2026, 10, 1),
+        criteria=CriteriaConfig(productivity_min_increase=0.11),
+    )
+
+    assert rows[0].productivity_decline == "Нет"
+    provenance = next(
+        item for item in report.field_provenance if item["field"] == "Снижение продуктивности"
+    )
+    assert "AA102" not in {location["cell"] for location in provenance["locations"]}
 
 
 @pytest.mark.parametrize(
@@ -881,7 +993,7 @@ def test_lnd_and_depth_unknowns_stay_blank_with_source_cells() -> None:
     )
 
 
-def test_month_precision_launch_stays_blank_with_exact_provenance() -> None:
+def test_month_precision_launch_is_defaulted_with_exact_provenance() -> None:
     fund_well = _fund_identity("Береговое")
     record = replace(_gdi_identity("Береговое"), date_cell="E100")
     report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
@@ -894,15 +1006,20 @@ def test_month_precision_launch_stays_blank_with_exact_provenance() -> None:
         (_history_stage(PartialDate(2020, 7, None, DatePrecision.MONTH)),),
     )
 
-    assert rows[0].launch_date is None
-    assert report.launch_date_incomplete == 1
-    issue = next(
-        issue for issue in report.issues if issue.code == "WELL_HISTORY_DATE_INCOMPLETE_PRECISION"
-    )
-    assert issue.locations == (SourceLocation("history.xlsx", "БЛУ", "C3"),)
+    assert rows[0].launch_date == date(2020, 7, 1)
+    assert report.launch_date_defaulted == 1
+    provenance = next(item for item in report.field_provenance if item["field"] == "Дата запуска")
+    assert provenance["locations"] == [SourceLocation("history.xlsx", "БЛУ", "C3").to_dict()]
+    assert provenance["details"]["source_partial_date"] == {
+        "year": 2020,
+        "month": 7,
+        "day": None,
+        "precision": "month",
+    }
+    assert provenance["details"]["date_defaulting_rule"] == "month_to_first_day"
 
 
-def test_same_month_launch_and_gdi_is_lifecycle_ambiguous() -> None:
+def test_same_month_launch_and_gdi_uses_effective_launch_date() -> None:
     fund_well = _fund_identity("Береговое")
     record = replace(
         _gdi_identity("Береговое", when=datetime(2023, 6, 15)),
@@ -919,10 +1036,8 @@ def test_same_month_launch_and_gdi_is_lifecycle_ambiguous() -> None:
         (history,),
     )
 
-    assert rows[0].launch_date is None
-    issue = next(issue for issue in report.issues if issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS")
-    assert SourceLocation("history.xlsx", "БЛУ", "C3") in issue.locations
-    assert SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "E100") in issue.locations
+    assert rows[0].launch_date == date(2023, 6, 1)
+    assert rows[0].gdi_count == 1
 
 
 def test_info_issue_is_logged_at_info_level(caplog) -> None:  # type: ignore[no-untyped-def]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import calendar
 import re
 from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -92,25 +91,42 @@ def _month_year(month: int, year_digits: str) -> PartialDate | None:
 DateLike = PartialDate | date | datetime
 
 
-def date_window(value: DateLike) -> tuple[datetime, datetime]:
-    """Return the earliest/latest exact instants represented by a date value."""
+def effective_calendar_date(value: DateLike) -> date:
+    """Return the approved business day while retaining source precision."""
 
     if isinstance(value, PartialDate):
-        if value.precision is DatePrecision.YEAR:
-            assert value.month is None
-            return (
-                datetime(value.year, 1, 1),
-                datetime(value.year, 12, 31, 23, 59, 59, 999999),
-            )
-        if value.precision is DatePrecision.MONTH:
-            assert value.month is not None
-            last_day = calendar.monthrange(value.year, value.month)[1]
-            return (
-                datetime(value.year, value.month, 1),
-                datetime(value.year, value.month, last_day, 23, 59, 59, 999999),
-            )
-        assert value.month is not None and value.day is not None
-        exact = datetime(value.year, value.month, value.day)
+        return effective_date(value)
+    return value.date() if isinstance(value, datetime) else value
+
+
+def effective_date(value: PartialDate) -> date:
+    """Apply the customer-approved first-day rule while retaining raw precision."""
+
+    if value.precision is DatePrecision.YEAR:
+        return date(value.year, 1, 1)
+    if value.precision is DatePrecision.MONTH:
+        assert value.month is not None
+        return date(value.year, value.month, 1)
+    assert value.month is not None and value.day is not None
+    return date(value.year, value.month, value.day)
+
+
+def date_defaulting_rule(value: PartialDate) -> str:
+    """Describe the effective-date rule separately from source precision."""
+
+    return {
+        DatePrecision.DAY: "source_day_unchanged",
+        DatePrecision.MONTH: "month_to_first_day",
+        DatePrecision.YEAR: "year_to_january_first",
+    }[value.precision]
+
+
+def date_window(value: DateLike) -> tuple[datetime, datetime]:
+    """Return the business-effective calendar day while source precision stays intact."""
+
+    if isinstance(value, PartialDate):
+        effective = effective_date(value)
+        exact = datetime.combine(effective, time.min)
         return exact, exact.replace(hour=23, minute=59, second=59, microsecond=999999)
     if isinstance(value, datetime):
         return value, value

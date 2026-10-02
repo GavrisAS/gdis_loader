@@ -59,6 +59,14 @@ def _find_productivity_a_column(headers: tuple[object, ...]) -> int | None:
     return None
 
 
+def _find_productivity_b_column(headers: tuple[object, ...]) -> int | None:
+    for index, value in enumerate(headers):
+        header = normalized_header(value)
+        if header.startswith("b,") or header in {"коэф b", "коэффициент b"}:
+            return index
+    return None
+
+
 def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, ...]]:
     """Read only the required-width portion of the main GDI worksheet."""
 
@@ -106,7 +114,10 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
         header_row, headers = header
         columns = index_headers(headers, GDI_HEADER_ALIASES)
         productivity_a_column = _find_productivity_a_column(headers)
-        last_column = max((*columns.values(), productivity_a_column or 0)) + 1
+        productivity_b_column = _find_productivity_b_column(headers)
+        last_column = (
+            max((*columns.values(), productivity_a_column or 0, productivity_b_column or 0)) + 1
+        )
         records: list[GdiRecord] = []
         for row_number, row in enumerate(
             worksheet.iter_rows(
@@ -238,6 +249,11 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                 if productivity_a_column is not None and productivity_a_column < len(values)
                 else None
             )
+            productivity_b_raw = (
+                values[productivity_b_column]
+                if productivity_b_column is not None and productivity_b_column < len(values)
+                else None
+            )
             records.append(
                 GdiRecord(
                     raw_field_name=raw_field,
@@ -276,6 +292,14 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                         if productivity_a_column is not None
                         else None
                     ),
+                    productivity_b_raw=as_cell_value(productivity_b_raw),
+                    productivity_b_value=parse_number(productivity_b_raw),
+                    productivity_b_cell=(
+                        coordinate(row_number, productivity_b_column)
+                        if productivity_b_column is not None
+                        else None
+                    ),
+                    source_rows=(row_number,),
                 )
             )
         return tuple(records), tuple(issues)

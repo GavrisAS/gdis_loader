@@ -5,8 +5,11 @@ from datetime import datetime
 import pytest
 
 from gdis_loader.domain.dates import (
+    date_defaulting_rule,
     definitely_after,
     definitely_before,
+    effective_calendar_date,
+    effective_date,
     overlaps_same_precision_window,
     parse_partial_date,
 )
@@ -38,21 +41,38 @@ def test_invalid_or_under_precision_month_year_is_not_guessed(raw: object) -> No
     assert parse_partial_date(raw, "General") is None
 
 
-def test_exact_gdi_date_is_definitely_after_prior_month_but_same_month_is_ambiguous() -> None:
+def test_partial_month_defaults_to_first_day_for_business_comparisons() -> None:
     launch = PartialDate(2023, 6, None, DatePrecision.MONTH)
     later = datetime(2023, 8, 15)
     same_month = datetime(2023, 6, 15)
 
     assert definitely_after(later, launch)
     assert not definitely_before(later, launch)
-    assert overlaps_same_precision_window(same_month, launch)
-    assert not definitely_after(same_month, launch)
+    assert definitely_after(same_month, launch)
+    assert not overlaps_same_precision_window(same_month, launch)
+    assert effective_date(launch).isoformat() == "2023-06-01"
+    assert date_defaulting_rule(launch) == "month_to_first_day"
 
 
-def test_two_partial_months_are_not_ordered_when_the_windows_overlap() -> None:
+def test_partial_month_dates_keep_provenance_but_compare_by_effective_day() -> None:
     june = PartialDate(2023, 6, None, DatePrecision.MONTH)
     same_june = PartialDate(2023, 6, None, DatePrecision.MONTH)
     july = PartialDate(2023, 7, None, DatePrecision.MONTH)
 
+    assert effective_date(june) == effective_date(same_june)
     assert overlaps_same_precision_window(june, same_june)
     assert definitely_before(june, july)
+
+
+def test_year_date_defaults_to_january_first_including_leap_year() -> None:
+    year = PartialDate(2024, None, None, DatePrecision.YEAR)
+
+    assert effective_date(year).isoformat() == "2024-01-01"
+    assert date_defaulting_rule(year) == "year_to_january_first"
+
+
+def test_day_precision_and_leap_day_remain_unchanged() -> None:
+    leap_day = PartialDate(2024, 2, 29, DatePrecision.DAY)
+
+    assert effective_date(leap_day).isoformat() == "2024-02-29"
+    assert effective_calendar_date(leap_day).isoformat() == "2024-02-29"

@@ -5,6 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
+from openpyxl import load_workbook
 
 from gdis_loader.domain.models import IssueSeverity, SourcePaths
 from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
@@ -18,8 +19,8 @@ REAL_FILES = (
     DATA_ROOT / "Сводная таблица ГДИ.xlsx",
     DATA_ROOT / "База ЛХА_Итог!.xlsm",
     DATA_ROOT / "07.2026 Cуточный рапорт БГП_полный.xlsm",
-    DATA_ROOT / "Ответы на вопросы" / "2026-09-30_ответы_v1" / "База по скважинам.xlsx",
-    DATA_ROOT / "Ответы на вопросы" / "2026-10-01_ответы_v1.1" / "Статус исследований_2026.xlsx",
+    DATA_ROOT / "База по скважинам.xlsx",
+    DATA_ROOT / "Статус исследований_2026.xlsx",
 )
 
 
@@ -43,10 +44,10 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         paths,
         tmp_path / "loader.log",
         target_field="Береговое",
-        calculation_date=date(2026, 10, 1),
+        calculation_date=date(2026, 10, 2),
     )
 
-    assert result.report.calculation_date == date(2026, 10, 1)
+    assert result.report.calculation_date == date(2026, 10, 2)
     assert result.report.fund_total_source == 129
     assert result.report.fund_total == 129
     assert result.report.target_field == "Береговое"
@@ -56,11 +57,43 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.rows_prepared == 78
     assert result.report.rows_written == result.report.rows_prepared
     assert result.report.gdi_kind_counts == {
+        "EXCLUDED": 208,
+        "ID": 32,
+        "ID_KVD": 866,
+        "KVD": 701,
+        "UNKNOWN": 23,
+    }
+    assert result.report.gdi_raw_kind_counts == {
         "EXCLUDED": 209,
         "ID": 32,
         "ID_KVD": 867,
-        "KVD": 702,
-        "UNKNOWN": 22,
+        "KVD": 701,
+        "UNKNOWN": 23,
+    }
+    assert result.report.gdi_raw_record_count == 1832
+    assert result.report.gdi_deduplicated_record_count == 1830
+    assert result.report.gdi_exact_duplicates_collapsed == 2
+    assert result.report.gdi_pre_launch_excluded == 16
+    assert result.report.matched == 69
+    assert result.report.ambiguous == 9
+    assert result.report.debit_filled == 57
+    assert result.report.debit_blank == 12
+    assert result.report.debit_valid_day_count == 1355
+    assert result.report.gdm_filled_yes == 4
+    assert result.report.gdm_filled_no == 45
+    assert result.report.gdm_blank == 20
+    assert result.report.gdm_fallback_selected == 11
+    assert result.report.gdm_stale_fallback_rejected == 16
+    assert result.report.gdm_target_candidate_rows == 54
+    assert result.report.criteria_snapshot["values"] == {
+        "insufficient_gdi_min_count": 2,
+        "productivity_min_increase": 0.0,
+        "chlorine_current_min_mg_dm3": 2000.0,
+        "chlorine_delta_min_mg_dm3": 1000.0,
+        "downhole_depth_threshold_m": 0.0,
+        "gdm_abs_delta_threshold": 5.0,
+        "gdm_fallback_max_age_days": 365,
+        "gas_rate_working_day_min_rate": 0.0,
     }
     assert result.report.well_history_records > 0
     assert result.report.well_history_gtm_events > 0
@@ -75,13 +108,39 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         for issue in result.report.issues
         if issue.code == "LHA_DUPLICATE_TIMESTAMP_RESOLVED_MAX"
     )
-    assert not any(issue.code.startswith("DAILY_") for issue in result.report.issues)
+    assert any(
+        issue.code == "GDI_EXACT_DUPLICATE_COLLAPSED"
+        and issue.severity is IssueSeverity.INFO
+        and issue.locations
+        for issue in result.report.issues
+    )
     assert not any(
         issue.code == "LHA_INVALID_VALUE" and issue.severity.value == "warning"
         for issue in result.report.issues
     )
     assert output.is_file()
     assert output.with_suffix(".load-report.json").is_file()
+    workbook = load_workbook(output, read_only=True, data_only=True, keep_links=False)
+    try:
+        worksheet = workbook["Данные"]
+        headers = tuple(cell.value for cell in next(worksheet.iter_rows(min_row=6, max_row=6)))
+        well_index = headers.index("Скважина")
+        count_index = headers.index("Количество ГДИ")
+        launch_index = headers.index("Дата запуска")
+        rows_by_well = {
+            str(row[well_index]): row
+            for row in worksheet.iter_rows(min_row=7, values_only=True)
+            if row[well_index] is not None
+        }
+        expected_counts = {"12": 20, "13": 21, "21": 19, "22": 19}
+        for well, expected_count in expected_counts.items():
+            assert rows_by_well[well][count_index] == expected_count
+        assert rows_by_well["12"][launch_index].date() == date(2008, 2, 1)
+        assert rows_by_well["13"][launch_index].date() == date(2002, 5, 1)
+        assert rows_by_well["21"][launch_index].date() == date(2004, 3, 1)
+        assert rows_by_well["22"][launch_index].date() == date(2004, 3, 1)
+    finally:
+        workbook.close()
     with ZipFile(output) as archive:
         table_xml = archive.read("xl/tables/table2.xml").decode("utf-8")
         sheet_xml = archive.read("xl/worksheets/sheet3.xml").decode("utf-8")
@@ -115,7 +174,7 @@ def test_real_validation_discovers_fields_from_fund_and_reports_coverage(tmp_pat
         output=None,
     )
 
-    result = run_validate(paths, tmp_path / "validate.log", calculation_date=date(2026, 10, 1))
+    result = run_validate(paths, tmp_path / "validate.log", calculation_date=date(2026, 10, 2))
 
     assert set(result.report.available_fields) == {
         "Береговое",

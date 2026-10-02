@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from gdis_loader.domain.dates import (
-    definitely_after,
-    overlaps_same_precision_window,
+    effective_calendar_date,
 )
 from gdis_loader.domain.models import (
     DiagnosticIssue,
@@ -36,14 +35,13 @@ def _variant_kind(identity: str) -> str | None:
     return normalize_well_id(identity).recognized_variant
 
 
-def _has_unconfirmed_sequential_zbs_name(identity: str) -> bool:
+def _zbs_ordinal(identity: str) -> int:
     normalized = normalize_well_id(identity)
     if normalized.base_well_id is None or normalized.target_well_id is None:
-        return False
-    prefix = f"{normalized.base_well_id}_"
-    if not normalized.target_well_id.startswith(prefix):
-        return False
-    return re.fullmatch(r"ЗБС\s*\d+", normalized.target_well_id[len(prefix) :]) is not None
+        return 1
+    suffix = normalized.target_well_id.removeprefix(f"{normalized.base_well_id}_")
+    match = re.fullmatch(r"ЗБС\s*(\d*)", suffix)
+    return int(match.group(1)) if match is not None and match.group(1) else 1
 
 
 def _record_identity(record: GdiRecord | None, fund_well: FundWell) -> str:
@@ -61,7 +59,9 @@ def _stage_kind_for_variant(variant: str | None) -> WellEventKind | None:
         return WellEventKind.ZBS
     if variant == "ПВЛГ":
         return WellEventKind.PVLG
-    if variant is None:
+    if variant == "ПНЛГ":
+        return WellEventKind.PNLG
+    if variant in {None, "МЗС", "ГС"}:
         return WellEventKind.INITIAL
     return None
 
@@ -100,7 +100,8 @@ def _assign_unsuffixed_record_by_timeline(
     unresolved_events = tuple(
         event
         for event in history.events
-        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG} and event.event_date is None
+        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG, WellEventKind.PNLG}
+        and event.event_date is None
     )
     if unresolved_events:
         locations = [*fund_well.locations, *record.locations]
@@ -117,24 +118,9 @@ def _assign_unsuffixed_record_by_timeline(
             ),
         )
 
-    overlapping = tuple(
-        stage
-        for stage in history.stages
-        if overlaps_same_precision_window(record.study_date, stage.started_at)
-    )
-    if overlapping:
-        return LifecycleResolution(
-            None,
-            _issue(
-                "WELL_HISTORY_STAGE_AMBIGUOUS",
-                "Дата root-only ГДИ пересекается по точности с датой начала этапа.",
-                fund_well,
-                record,
-                overlapping,
-            ),
-        )
+    study_day = effective_calendar_date(record.study_date)
     preceding = tuple(
-        stage for stage in history.stages if definitely_after(record.study_date, stage.started_at)
+        stage for stage in history.stages if study_day >= effective_calendar_date(stage.started_at)
     )
     if not preceding:
         return LifecycleResolution(None)
@@ -142,7 +128,9 @@ def _assign_unsuffixed_record_by_timeline(
         stage
         for stage in preceding
         if not any(
-            other is not stage and definitely_after(other.started_at, stage.started_at)
+            other is not stage
+            and effective_calendar_date(other.started_at)
+            > effective_calendar_date(stage.started_at)
             for other in preceding
         )
     )
@@ -158,22 +146,6 @@ def _assign_unsuffixed_record_by_timeline(
             ),
         )
     stage = latest[0]
-    if (
-        stage.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG}
-        and sum(candidate.event_kind is stage.event_kind for candidate in preceding) > 1
-    ):
-        return LifecycleResolution(
-            None,
-            _issue(
-                "WELL_HISTORY_STAGE_AMBIGUOUS",
-                "Для последовательных однотипных GTM root-only label не определяет этап.",
-                fund_well,
-                record,
-                tuple(
-                    candidate for candidate in preceding if candidate.event_kind is stage.event_kind
-                ),
-            ),
-        )
     if record.normalized_plast is None or stage.plast != record.normalized_plast:
         return LifecycleResolution(
             None,
@@ -203,12 +175,33 @@ def resolve_lifecycle_stage(
     agree before a stage is selected.
     """
 
+    identity = _record_identity(record, fund_well)
+    variant = _variant_kind(identity)
+    normalized_identity = normalize_well_id(identity)
     matching_histories = tuple(
         history
         for history in histories
         if history.physical_root == fund_well.base_well_id
         and normalize_field_name(history.field_name) == fund_well.normalized_field
     )
+    if variant in {"МЗС", "ГС"} or (
+        normalized_identity.target_well_id != normalized_identity.base_well_id and variant is None
+    ):
+        matching_histories = tuple(
+            history
+            for history in matching_histories
+            if normalize_well_id(history.source_display_well).target_well_id
+            == normalized_identity.target_well_id
+        )
+    else:
+        root_histories = tuple(
+            history
+            for history in matching_histories
+            if normalize_well_id(history.source_display_well).target_well_id
+            == normalized_identity.base_well_id
+        )
+        if root_histories:
+            matching_histories = root_histories
     if not matching_histories:
         return LifecycleResolution(None)
     if len(matching_histories) > 1:
@@ -223,24 +216,8 @@ def resolve_lifecycle_stage(
         return LifecycleResolution(None, issue)
 
     history = matching_histories[0]
-    identity = _record_identity(record, fund_well)
-    if _has_unconfirmed_sequential_zbs_name(identity):
-        zbs_stages = tuple(
-            stage for stage in history.stages if stage.event_kind is WellEventKind.ZBS
-        )
-        return LifecycleResolution(
-            None,
-            _issue(
-                "WELL_HISTORY_STAGE_AMBIGUOUS",
-                "Номер ЗБС в обозначении не сопоставляется с событием без правила именования.",
-                fund_well,
-                record,
-                zbs_stages,
-            ),
-        )
-    variant = _variant_kind(identity)
     expected_kind = _stage_kind_for_variant(variant)
-    if expected_kind is None:
+    if expected_kind is None and variant not in {"ПВР", "КЛК"}:
         return LifecycleResolution(None)
 
     plast = record.normalized_plast if record is not None else fund_well.object_plast_hint
@@ -252,7 +229,8 @@ def resolve_lifecycle_stage(
     unresolved_events = tuple(
         event
         for event in history.events
-        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG} and event.event_date is None
+        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG, WellEventKind.PNLG}
+        and event.event_date is None
     )
     if unresolved_events:
         locations = list(fund_well.locations)
@@ -273,14 +251,14 @@ def resolve_lifecycle_stage(
             ),
         )
 
-    if variant is None and record is not None and record.study_date is not None:
+    if variant in {None, "ПВР", "КЛК"} and record is not None and record.study_date is not None:
         return _assign_unsuffixed_record_by_timeline(fund_well, record, history)
 
     if record is None and variant is None:
         known_boundaries = tuple(
             event
             for event in history.events
-            if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG}
+            if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG, WellEventKind.PNLG}
         )
         if known_boundaries:
             locations = [*fund_well.locations]
@@ -301,11 +279,74 @@ def resolve_lifecycle_stage(
             )
 
     if record is None or record.study_date is None:
+        if variant in {"ПВР", "КЛК"}:
+            candidates = tuple(
+                stage for stage in history.stages if plast is None or stage.plast == plast
+            )
+            if not candidates:
+                return LifecycleResolution(None)
+            latest_start = max(
+                (
+                    stage.started_at.year,
+                    stage.started_at.month or 1,
+                    stage.started_at.day or 1,
+                )
+                for stage in candidates
+            )
+            latest_candidates = tuple(
+                stage
+                for stage in candidates
+                if (
+                    stage.started_at.year,
+                    stage.started_at.month or 1,
+                    stage.started_at.day or 1,
+                )
+                == latest_start
+            )
+            if len(latest_candidates) == 1:
+                return LifecycleResolution(latest_candidates[0])
+            return LifecycleResolution(
+                None,
+                _issue(
+                    "WELL_HISTORY_STAGE_AMBIGUOUS",
+                    "Для текущего пласта найдено несколько равнодатных этапов истории.",
+                    fund_well,
+                    record,
+                    latest_candidates,
+                ),
+            )
         stages = tuple(
             stage
             for stage in history.stages
             if stage.event_kind is expected_kind and (plast is None or stage.plast == plast)
         )
+        if variant == "ЗБС":
+            all_zbs = tuple(
+                sorted(
+                    (stage for stage in history.stages if stage.event_kind is WellEventKind.ZBS),
+                    key=lambda stage: (
+                        stage.started_at.year,
+                        stage.started_at.month or 1,
+                        stage.started_at.day or 1,
+                        stage.stage_sequence,
+                    ),
+                )
+            )
+            ordinal = _zbs_ordinal(identity)
+            if ordinal <= len(all_zbs):
+                selected_zbs = all_zbs[ordinal - 1]
+                return LifecycleResolution(
+                    selected_zbs if plast is None or selected_zbs.plast == plast else None,
+                    None
+                    if plast is None or selected_zbs.plast == plast
+                    else _issue(
+                        "UNRESOLVED_PLAST_EQUIVALENCE",
+                        "Этап ЗБС имеет другое обозначение текущего пласта.",
+                        fund_well,
+                        record,
+                        (selected_zbs,),
+                    ),
+                )
         if not stages:
             return LifecycleResolution(None)
         if len(stages) != 1:
@@ -323,25 +364,9 @@ def resolve_lifecycle_stage(
 
     study_date = record.study_date
     all_stages = history.stages
-    overlapping = tuple(
-        stage
-        for stage in all_stages
-        if overlaps_same_precision_window(study_date, stage.started_at)
-    )
-    if overlapping:
-        return LifecycleResolution(
-            None,
-            _issue(
-                "WELL_HISTORY_STAGE_AMBIGUOUS",
-                "Дата ГДИ и дата начала этапа пересекаются по точности; порядок неизвестен.",
-                fund_well,
-                record,
-                overlapping,
-            ),
-        )
-
+    study_day = effective_calendar_date(study_date)
     preceding = tuple(
-        stage for stage in all_stages if definitely_after(study_date, stage.started_at)
+        stage for stage in all_stages if study_day >= effective_calendar_date(stage.started_at)
     )
     if not preceding:
         return LifecycleResolution(None)
@@ -349,7 +374,9 @@ def resolve_lifecycle_stage(
         stage
         for stage in preceding
         if not any(
-            other is not stage and definitely_after(other.started_at, stage.started_at)
+            other is not stage
+            and effective_calendar_date(other.started_at)
+            > effective_calendar_date(stage.started_at)
             for other in preceding
         )
     )
@@ -366,25 +393,51 @@ def resolve_lifecycle_stage(
         )
     selected = latest[0]
     if variant == "ЗБС":
-        preceding_zbs = tuple(
+        all_zbs = tuple(
+            sorted(
+                (stage for stage in all_stages if stage.event_kind is WellEventKind.ZBS),
+                key=lambda stage: (
+                    stage.started_at.year,
+                    stage.started_at.month or 1,
+                    stage.started_at.day or 1,
+                    stage.stage_sequence,
+                ),
+            )
+        )
+        ordinal = _zbs_ordinal(identity)
+        if ordinal > len(all_zbs):
+            return LifecycleResolution(
+                None,
+                _issue(
+                    "WELL_HISTORY_STAGE_NOT_FOUND",
+                    f"Для обозначения ЗБС{ordinal if ordinal > 1 else ''} нет этапа в истории.",
+                    fund_well,
+                    record,
+                    all_zbs,
+                ),
+            )
+        named_stage = all_zbs[ordinal - 1]
+        if named_stage not in preceding:
+            return LifecycleResolution(None)
+        later_boundaries = tuple(
             stage
             for stage in preceding
-            if stage.event_kind is WellEventKind.ZBS and stage.plast == selected.plast
+            if stage is not named_stage
+            and effective_calendar_date(stage.started_at)
+            > effective_calendar_date(named_stage.started_at)
         )
-        if len(preceding_zbs) > 1:
+        if later_boundaries:
             return LifecycleResolution(
                 None,
                 _issue(
                     "WELL_HISTORY_STAGE_AMBIGUOUS",
-                    (
-                        "До даты ГДИ произошло несколько ЗБС; правило имени "
-                        "последовательной ЗБС не подтверждено."
-                    ),
+                    "Дата ГДИ относится к периоду после более поздней lifecycle-границы.",
                     fund_well,
                     record,
-                    preceding_zbs,
+                    (named_stage, *later_boundaries),
                 ),
             )
+        selected = named_stage
     if selected.event_kind is not expected_kind or (plast is not None and selected.plast != plast):
         return LifecycleResolution(
             None,
@@ -421,6 +474,7 @@ def assign_stage_by_date(
         for history in histories
         if history.physical_root == physical_root
         and normalize_field_name(history.field_name) == normalized_field
+        and normalize_well_id(history.source_display_well).target_well_id == physical_root
     )
     if len(candidates) != 1:
         relevant_stages = tuple(stage for history in candidates for stage in history.stages)
@@ -434,29 +488,18 @@ def assign_stage_by_date(
         )
 
     history = candidates[0]
-    observation_date = observed_at.date() if isinstance(observed_at, datetime) else observed_at
+    observation_date = effective_calendar_date(observed_at)
     unresolved_boundaries = tuple(
         event
         for event in history.events
-        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG} and event.event_date is None
+        if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG, WellEventKind.PNLG}
+        and event.event_date is None
     )
     all_stages = history.stages
-    overlaps = tuple(
+    preceding = tuple(
         stage
         for stage in all_stages
-        if overlaps_same_precision_window(observation_date, stage.started_at)
-    )
-    if overlaps:
-        return LifecycleResolution(
-            None,
-            _timestamp_issue(
-                "Время наблюдения ЛХА совпадает с неполной датой границы жизненного цикла.",
-                observation_location,
-                overlaps,
-            ),
-        )
-    preceding = tuple(
-        stage for stage in all_stages if definitely_after(observation_date, stage.started_at)
+        if observation_date >= effective_calendar_date(stage.started_at)
     )
     if unresolved_boundaries:
         return LifecycleResolution(
@@ -474,7 +517,9 @@ def assign_stage_by_date(
         stage
         for stage in preceding
         if not any(
-            other is not stage and definitely_after(other.started_at, stage.started_at)
+            other is not stage
+            and effective_calendar_date(other.started_at)
+            > effective_calendar_date(stage.started_at)
             for other in preceding
         )
     )
