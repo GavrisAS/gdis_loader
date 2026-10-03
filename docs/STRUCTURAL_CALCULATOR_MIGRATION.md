@@ -1,8 +1,8 @@
-# Отложенная structural migration формул калькулятора
+# Structural migration шаблона — baseline loader v0.19
 
 Эта заметка фиксирует конкретный gap, найденный read-only анализом исходного
 `GDIS_Rating_Calculator_FIXED.xlsx`. Исторический baseline: в v0.13 формулы не менялись.
-Текущее pre-migration состояние v0.18 сохраняет этот formula layer без изменений.
+Принятый loader baseline v0.19 сохраняет этот formula layer без изменений.
 
 ## Требуемый downstream смысл
 
@@ -30,7 +30,7 @@ formula flow сообщает «недостаточно данных» и ос�
 равнозначно требуемому «пропустить только этот criterion и рассчитать λ по
 оставшимся numeric μ».
 
-## Текущее pre-migration решение (v0.18)
+## Историческое pre-migration решение (loader v0.19)
 
 Loader записывает agreed blank/unknown в `Данные` и полный diagnostic provenance.
 Formula sheets, weights, settings и визуальное оформление не меняются. Поля
@@ -62,4 +62,19 @@ strict generated-calculator hash revalidation. Полные production updates
 проверяются для Берегового, Пырейного и Хадырьяхинского. Эта итерация меняет
 только target data; `Расчет`, `Рейтинг`, `Настройки`, μ/λ formulas, weights и
 calculation settings сохраняются byte-identical. Описанная выше migration
-остается deferred и должна выполняться отдельным этапом после принятия v0.19.
+реализована отдельной offline операцией, runtime ее не вызывает.
+
+## Offline structural template v2
+
+Отдельный candidate реализован в `scripts/migrate_calculator_template.py`; обычный
+loader его не вызывает. Исходник и rollback сохранены побайтово.
+[Pre-audit](CALCULATOR_STRUCTURAL_AUDIT_PRE.md),
+[criteria map](CALCULATOR_CRITERIA_MAP.md),
+[math/formulas](CALCULATOR_FORMULA_MAP.md),
+[OOXML diff](CALCULATOR_STRUCTURAL_DIFF.md),
+[acceptance gates](CALCULATOR_STRUCTURAL_ACCEPTANCE.md).
+
+Migration implemented offline; final automated checks are recorded in acceptance.
+Template version 2 remains candidate until native Excel PASS. Durable tracked
+assets are under `templates/calculator/`; rollback does not require code rollback.
+Runtime reads capabilities and writes only Данные/tblData.

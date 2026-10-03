@@ -27,7 +27,7 @@ canonical field name, а у части well identities нет однозначн
 Конкретные source rows, которые не проходят однозначное lifecycle/plast
 сопоставление, остаются нерешёнными с diagnostics и пустыми target cells.
 Агрегаты текущего production run, включая причины и влияние на coverage,
-зафиксированы в [`REAL_DATA_DELTA_v0.18.md`](REAL_DATA_DELTA_v0.18.md). Это
+зафиксированы в [`REAL_DATA_DELTA_v0.19.md`](REAL_DATA_DELTA_v0.19.md). Это
 quality issues источника, а не основание выбирать случайного кандидата.
 
 ## Production data quality: 10306 (v0.18)

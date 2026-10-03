@@ -109,7 +109,7 @@ def test_writer_expands_table_over_100_rows_only_on_target_sheet(tmp_path: Path)
     result = write_target_rows(source, output, rows)
 
     assert result.rows_written == 101
-    assert "DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY" in result.warnings
+    assert "CALCULATOR_FORMULA_CAPACITY_UNKNOWN" in result.warnings
     assert _table_ref(output) == "A6:Z107"
     after = _target_entries(output)
     changed = set(result.changed_entries)

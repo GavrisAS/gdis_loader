@@ -37,6 +37,7 @@ from gdis_loader.domain.models import (
     WellHistoryParseResult,
     WellStage,
 )
+from gdis_loader.excel.template_capabilities import detect_template_capabilities
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
 from gdis_loader.matching.lifecycle import (
     LifecycleResolution,
@@ -74,11 +75,17 @@ from gdis_loader.validation.sources import (
 )
 
 LOGGER = logging.getLogger(__name__)
-_GDI_ZERO_COUNT_DIAGNOSTIC = (
-    "По подтверждённому бизнес-правилу μi должен быть 0, а критерий должен быть "
-    "исключён из итогового λ. Текущие формулы калькулятора пока не обеспечивают "
-    "это поведение полностью; требуется отдельная structural migration."
-)
+
+
+def _missing_policy_diagnostic(report: LoadReport) -> str:
+    path = report.input_paths.get("calculator")
+    if path and detect_template_capabilities(Path(path)).supports_missing_exclusion:
+        return ""
+    return (
+        "По подтверждённому бизнес-правилу μi должен быть 0, а критерий должен быть "
+        "исключён из итогового λ. Старые или неизвестные формулы пока не обеспечивают "
+        "это поведение полностью; поддержка missing exclusion не подтверждена."
+    )
 
 
 def _gdm_delta_is_missing(value: object) -> bool:
@@ -166,7 +173,12 @@ class ServiceResult:
             lines.append(f"Нормализаций пропущенного разделителя фонда: {separator_count}")
         if self.has_capacity_warning:
             lines.append(
-                "ВНИМАНИЕ: строки после 100 пока не рассчитываются на листах «Расчет» и «Рейтинг»."
+                "ВНИМАНИЕ: "
+                + next(
+                    issue.message
+                    for issue in report.issues
+                    if issue.code == "DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY"
+                )
             )
         if report.output_path:
             lines.append(f"Результат: {report.output_path}")
@@ -960,7 +972,7 @@ def _build_target_rows(
                                 severity=IssueSeverity.INFO,
                                 message=(
                                     "Количество ГДИ равно нулю; удельное количество оставлено "
-                                    "пустым. " + _GDI_ZERO_COUNT_DIAGNOSTIC
+                                    "пустым. " + _missing_policy_diagnostic(report)
                                 ),
                                 source="gdi",
                                 well_id=fund_well.base_well_id,
@@ -1727,7 +1739,7 @@ def _build_target_rows(
                             severity=IssueSeverity.INFO,
                             message=(
                                 "Количество ГДИ равно нулю; удельное количество оставлено пустым, "
-                                + _GDI_ZERO_COUNT_DIAGNOSTIC
+                                + _missing_policy_diagnostic(report)
                             ),
                             source="gdi",
                             well_id=fund_well.base_well_id,
@@ -2081,8 +2093,25 @@ def _build_target_rows(
                 if value is not None:
                     field_counts[name] += 1
         report.field_fill_counts = dict(sorted(field_counts.items()))
-    if len(target_rows) > 100:
-        calculator_path = report.input_paths.get("calculator")
+    calculator_path = report.input_paths.get("calculator")
+    capabilities = detect_template_capabilities(Path(calculator_path)) if calculator_path else None
+    if capabilities and capabilities.calculation_capacity is None:
+        _append_issues(
+            report,
+            (
+                DiagnosticIssue(
+                    code="CALCULATOR_FORMULA_CAPACITY_UNKNOWN",
+                    severity=IssueSeverity.WARNING,
+                    message="Расчетная емкость неизвестного template не подтверждена.",
+                    source="calculator",
+                    locations=(SourceLocation(file=calculator_path, sheet=None, cell=None),)
+                    if calculator_path
+                    else (),
+                ),
+            ),
+        )
+    if capabilities and capabilities.exceeds_capacity(len(target_rows)):
+        assert capabilities.calculation_capacity is not None
         _append_issues(
             report,
             (
@@ -2091,14 +2120,14 @@ def _build_target_rows(
                     severity=IssueSeverity.WARNING,
                     message=(
                         "Количество строк фонда превышает текущую расчетную емкость остальных "
-                        "листов калькулятора (100)."
+                        f"листов калькулятора ({capabilities.calculation_capacity})."
                     ),
                     source="calculator",
                     locations=(
                         SourceLocation(
                             file=calculator_path,
                             sheet="Расчет",
-                            cell="A106:Z106",
+                            cell=f"A{capabilities.calculation_capacity + 3}",
                         ),
                     )
                     if calculator_path

@@ -1,0 +1,29 @@
+calculator_template_version = 2
+formula_model = "weighted_geometric_active_mask"
+status = "candidate"
+storage = "A: versioned repository assets"
+loader_baseline = "v0.19"
+loader_release_target = "v0.20"
+baseline_commit = "934c005100ac8289957e816cba2f8a2b55914152"
+capacity = 1000
+automated_acceptance = "PASS: uv sync --locked; make check; 480 tests"
+native_excel_acceptance = "PENDING"
+
+[source]
+sha256 = "bb046cc365749a546d1bbe141165b08a664ba427ab9493b678ddce008fc85c6a"
+
+[rollback]
+version = 1
+capacity = 100
+supports_missing_exclusion = false
+path = "templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx"
+size_bytes = 1886651
+sha256 = "bb046cc365749a546d1bbe141165b08a664ba427ab9493b678ddce008fc85c6a"
+byte_identical = true
+
+[candidate]
+path = "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx"
+size_bytes = 13705198
+sha256 = "8d3a21c237f2af250053664752d55edc0ef7f8ef79a6f3abe7930fabfca8e8d6"
+supports_missing_exclusion = true
+supports_removed_criteria_model = true

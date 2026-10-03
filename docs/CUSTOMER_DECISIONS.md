@@ -168,10 +168,11 @@ research date, latest/fallback и возраст fallback.
 
 Если для качественного признака inputs недостаточно, target field остаётся blank,
 а не `Нет`. По подтверждённому бизнес-правилу `μi` должен быть `0`, а criterion
-должен быть исключён из итогового `λ`. Формулы текущего калькулятора пока не
-обеспечивают это поведение полностью; точный gap описан в
+должен быть исключён из итогового `λ`. В сохраненном исходном template v0.19
+этот gap остается. Отдельный structural template version2 candidate реализует
+μ=0 / exclusion; canonical switch ожидает native Excel acceptance. Подробности в
 [`STRUCTURAL_CALCULATOR_MIGRATION.md`](STRUCTURAL_CALCULATOR_MIGRATION.md).
-В этой версии формулы и остальные листы не изменяются.
+Loader runtime по-прежнему не изменяет формулы и остальные листы.
 
 
 ## Corrective pass v0.17: well-id grammar

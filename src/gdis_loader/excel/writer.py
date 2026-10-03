@@ -457,8 +457,13 @@ def write_target_rows(source: Path, output: Path, rows: Iterable[TargetRow]) -> 
     target_rows = tuple(rows)
     schema = _validate_target_headers(source)
     warnings_out: list[str] = []
-    if len(target_rows) > 100:
+    from gdis_loader.excel.template_capabilities import detect_template_capabilities
+
+    capabilities = detect_template_capabilities(source)
+    if capabilities.exceeds_capacity(len(target_rows)):
         warnings_out.append("DATA_ROWS_EXCEED_CALCULATOR_FORMULA_CAPACITY")
+    if capabilities.calculation_capacity is None:
+        warnings_out.append("CALCULATOR_FORMULA_CAPACITY_UNKNOWN")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary_name: str | None = None
     with ZipFile(source, "r") as archive:

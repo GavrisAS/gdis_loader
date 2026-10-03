@@ -322,7 +322,7 @@ def test_service_result_exposes_errors_and_capacity_warning() -> None:
     assert result.warning_count == 1
     assert result.has_capacity_warning
     assert "Предупреждений: 1" in summary
-    assert "строки после 100" in summary
+    assert "После 100 строки" in summary
     assert len(report.warnings) == result.warning_count
 
 

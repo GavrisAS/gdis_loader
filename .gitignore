@@ -38,3 +38,6 @@ data/*
 *_UPDATED.xlsx
 *_updated.xlsx
 *_result.xlsx
+
+# Local workbook migration artifacts (never production workbooks in Git)
+artifacts/

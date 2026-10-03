@@ -61,7 +61,7 @@ CLI использует тот же application service, что и GUI:
 
 ```bash
 uv run gdis-loader-cli validate \
-  --calculator data/GDIS_Rating_Calculator_FIXED.xlsx \
+  --calculator templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx \
   --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
   --gdi "data/Сводная таблица ГДИ.xlsx" \
   --lha "data/База ЛХА_Итог!.xlsm" \
@@ -70,7 +70,7 @@ uv run gdis-loader-cli validate \
   --research-status "data/Статус исследований_2026.xlsx"
 
 uv run gdis-loader-cli update \
-  --calculator data/GDIS_Rating_Calculator_FIXED.xlsx \
+  --calculator templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx \
   --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
   --gdi "data/Сводная таблица ГДИ.xlsx" \
   --lha "data/База ЛХА_Итог!.xlsm" \
@@ -100,9 +100,8 @@ GUI сохраняет атомарно в `config.toml`; в PyInstaller-сбо�
 `Проблемы ГДМ` и средний `Дебит`. Числовые границы находятся в `config.toml`;
 GUI предоставляет модальное окно `Критерии…`. Для качественных признаков без
 достаточных исходных данных target cell остаётся пустой. `ГТМ = Нет` остаётся
-временным решением. Структурная/formula migration отложена. При количестве строк больше 100
-расширяются `Данные`/`tblData`, с предупреждением о неизменной емкости прочих
-расчетных листов.
+временным решением. Structural v2 подготовлен как отдельный candidate. Runtime расширяет только
+`Данные`/`tblData`; предупреждение использует фактическую емкость template.
 
 Управляемые критерии и defaults перечислены в
 [`config.example.toml`](config.example.toml). Если файл не содержит секций
@@ -147,9 +146,8 @@ provenance (`file`, `sheet`, `cell`). В JSON это поле `locations`, а в
 итоговых значений Cl/ВГФ и не доказывает физическое отсутствие записей ЛХА:
 например, оно может включать строку с конфликтом одинакового timestamp.
 
-При фонде больше 100 строк summary содержит отдельное предупреждение, а после
-`update` GUI показывает его в заметном окне. Строки 101+ находятся в `Данные`, но
-формулы листов `Расчет` и `Рейтинг` для них пока не рассчитываются.
+При превышении емкости template (old: 100, v2: 1000) summary и GUI показывают
+предупреждение. Неизвестная емкость сообщается явно.
 
 `validate` не проверяет и не создаёт output path. Output extension, совпадение с
 input и каталог результата проверяются непосредственно перед update.
@@ -259,4 +257,31 @@ Dash composite `ПК19-20 → ПК19+20` и fund group `ПК9-17` сохраня
 update всех трех месторождений при наличии локального production bundle.
 Strict runtime audit повторно проверяет все 7 sources и generated calculator.
 Сверка: [REAL_DATA_DELTA_v0.19](docs/REAL_DATA_DELTA_v0.19.md).
-Structural μ/λ migration остается отдельным следующим этапом.
+Structural μ/λ migration реализована offline; native Excel acceptance ожидается.
+
+
+## Structural template v2 candidate
+
+Tracked assets (вариант A):
+- `templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx`;
+- `templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx`.
+
+Exact hashes и размеры: [metadata](docs/CALCULATOR_TEMPLATE_VERSION.toml).
+Runtime изменяет только `Данные` и `tblData`. Capacity определяется read-only по
+расчетной и рейтинговой таблицам. Template v2: 1000, rollback: 100.
+Missing policy фиксирована; retired settings скрыты и перечислены как unused.
+Manual μ остается резервом без override.
+
+Статус: **AUTOMATED PASS / NATIVE EXCEL PENDING** после проверок этого pass.
+До native gate template остается candidate. Инструкции оператора и rollback:
+[Native smoke](docs/CALCULATOR_NATIVE_EXCEL_SMOKE.md).
+
+Восстановление после clean clone: templates уже находятся в Git. Проверить
+`sha256sum templates/calculator/*.xlsx templates/calculator/archive/*.xlsx`.
+Для rollback выбрать архивный workbook в том же loader; исходник не менять.
+Rebuild candidate в новый путь:
+
+```bash
+uv run python scripts/migrate_calculator_template.py templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx /tmp/structural-v2.xlsx
+uv run python scripts/verify_calculator_template.py templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx data artifacts/calculator/final-three-fields
+```
