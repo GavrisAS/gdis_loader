@@ -118,10 +118,23 @@ class LhaIndex:
         ]
         lifecycle_issues: list[DiagnosticIssue] = []
         root = physical_root or base_well_id
-        if identity != root and lifecycle_stage is not None:
-            # Legacy LHA rows can omit a confirmed suffix. Attach those rows
-            # only when field, plast, timestamp, and the history timeline all
-            # resolve them to the same lifecycle stage as the selected GDI.
+        if lifecycle_stage is not None:
+            # Root-only LHA rows are shared across lifecycle stages. Resolve
+            # each by field, plast, timestamp, and history before using it,
+            # including when the fund display identity itself is the root.
+            eligible = [
+                record
+                for record in eligible
+                if (
+                    record.target_well_id
+                    or (
+                        normalize_well_id(record.raw_well_name).target_well_id
+                        if record.raw_well_name is not None
+                        else None
+                    )
+                )
+                != root
+            ]
             root_records = tuple(
                 record
                 for record in self._records

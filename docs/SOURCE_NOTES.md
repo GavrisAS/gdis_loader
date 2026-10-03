@@ -51,7 +51,8 @@
   После dedupe: EXCLUDED 208, ID 32, ID_KVD 866, KVD 701, UNKNOWN 23.
 - Prefix marker определяет type; arbitrary trailing explanatory words допустимы.
   `МЗС+миниКВД` не распознаётся как KVD по substring.
-- Независимая full-fund reconciliation описана в `REAL_DATA_DELTA_v0.13.md`.
+- Cross-check full-fund reconciliation с общими canonical business primitives
+  описан в `REAL_DATA_DELTA_v0.13.md`.
 
 ## `Статус исследований_2026.xlsx`
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime
 
+import pytest
+
 from gdis_loader.domain.models import (
     DatePrecision,
     FundCategory,
@@ -267,13 +269,57 @@ def test_pvr_and_klk_do_not_create_lifecycle_boundaries() -> None:
     assert klk.stage == history.stages[2]
 
 
-def test_missing_gdi_does_not_assign_base_well_after_lifecycle_boundary() -> None:
-    resolution = resolve_lifecycle_stage(_fund("051"), None, (_history(),))
+@pytest.mark.parametrize("boundary", [WellEventKind.PVLG, WellEventKind.PNLG])
+def test_current_plast_resolves_latest_pvlg_pnlg_stage_without_gdi(
+    boundary: WellEventKind,
+) -> None:
+    history = _history()
+    latest = replace(history.stages[-1], event_kind=boundary)
+    modified = replace(history, stages=(*history.stages[:-1], latest))
+
+    resolution = resolve_lifecycle_stage(_fund("051", "ПК2"), None, (modified,))
+
+    assert resolution.issue is None
+    assert resolution.stage == latest
+    assert resolution.stage.event_kind is boundary
+
+
+def test_current_zbs_stage_resolves_without_new_gdi() -> None:
+    history = _history()
+    zbs = history.stages[1]
+    modified = replace(history, stages=history.stages[:2])
+
+    resolution = resolve_lifecycle_stage(_fund("051_ЗБС", "ПК1"), None, (modified,))
+
+    assert resolution.issue is None
+    assert resolution.stage == zbs
+
+
+def test_current_plast_does_not_resolve_to_previous_stage_when_latest_plast_differs() -> None:
+    resolution = resolve_lifecycle_stage(_fund("051", "ПК1"), None, (_history(),))
 
     assert resolution.stage is None
     assert resolution.issue is not None
     assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
-    assert SourceLocation("history.xlsx", "БЛУ", "I4") in resolution.issue.locations
+    assert SourceLocation("history.xlsx", "БЛУ", "I5") in resolution.issue.locations
+
+
+def test_real_current_stage_tie_remains_ambiguous() -> None:
+    history = _history()
+    competing = replace(
+        history.stages[-1],
+        event_kind=WellEventKind.PNLG,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "I6"),
+    )
+    modified = replace(history, stages=(*history.stages, competing))
+
+    resolution = resolve_lifecycle_stage(_fund("051", "ПК2"), None, (modified,))
+
+    assert resolution.stage is None
+    assert resolution.issue is not None
+    assert resolution.issue.code == "WELL_HISTORY_STAGE_AMBIGUOUS"
+    assert SourceLocation("history.xlsx", "БЛУ", "I5") in resolution.issue.locations
+    assert SourceLocation("history.xlsx", "БЛУ", "I6") in resolution.issue.locations
 
 
 def test_same_month_stage_boundary_uses_first_day_defaulting() -> None:

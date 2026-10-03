@@ -75,18 +75,19 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdi_raw_record_count == 1832
     assert result.report.gdi_deduplicated_record_count == 1830
     assert result.report.gdi_exact_duplicates_collapsed == 2
-    assert result.report.gdi_pre_launch_excluded == 16
-    assert result.report.matched == 69
-    assert result.report.ambiguous == 9
-    assert result.report.debit_filled == 57
+    assert result.report.gdi_pre_launch_excluded == 10
+    assert result.report.matched == 58
+    assert result.report.ambiguous == 17
+    assert result.report.no_gdi == 3
+    assert result.report.debit_filled == 49
     assert result.report.debit_blank == 12
-    assert result.report.debit_valid_day_count == 1355
+    assert result.report.debit_valid_day_count == 1175
     assert result.report.gdm_filled_yes == 4
-    assert result.report.gdm_filled_no == 45
-    assert result.report.gdm_blank == 20
+    assert result.report.gdm_filled_no == 42
+    assert result.report.gdm_blank == 15
     assert result.report.gdm_fallback_selected == 11
-    assert result.report.gdm_stale_fallback_rejected == 16
-    assert result.report.gdm_target_candidate_rows == 54
+    assert result.report.gdm_stale_fallback_rejected == 13
+    assert result.report.gdm_target_candidate_rows == 40
     expected_criteria = {
         "insufficient_gdi_min_count": 2,
         "productivity_min_increase": 0.0,
@@ -138,6 +139,18 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         well_index = headers.index("Скважина")
         count_index = headers.index("Количество ГДИ")
         launch_index = headers.index("Дата запуска")
+        insufficient_index = headers.index("Недостаточно ГДИС")
+        no_gdi_index = headers.index("Продолжительность без ГДИ")
+        no_id_index = headers.index("Продолжительность без ИД")
+        no_kvd_index = headers.index("Продолжительность без КВД")
+        specific_index = headers.index("Удельное количество ГДИ")
+        lnd_index = headers.index("ЛНД")
+        downhole_index = headers.index("Глубинные датчики")
+        productivity_index = headers.index("Снижение продуктивности")
+        cl_current_index = headers.index("Cl текущий")
+        cl_previous_index = headers.index("Cl предыдущий")
+        gdm_index = headers.index("Проблемы ГДМ")
+        debit_index = headers.index("Дебит")
         rows_by_well = {
             str(row[well_index]): row
             for row in worksheet.iter_rows(min_row=7, values_only=True)
@@ -151,6 +164,23 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         assert rows_by_well["13"][launch_index].date() == date(2002, 5, 1)
         assert rows_by_well["21"][launch_index].date() == date(2004, 3, 1)
         assert rows_by_well["22"][launch_index].date() == date(2004, 3, 1)
+        zero_gdi_rows = [row for row in rows_by_well.values() if row[count_index] == 0]
+        assert len(zero_gdi_rows) == 3
+        for row in zero_gdi_rows:
+            launch = row[launch_index].date()
+            expected_duration = (date(2026, 10, 2) - launch).days / 365
+            assert row[insufficient_index] == "Да"
+            assert row[no_gdi_index] == expected_duration
+            assert row[no_id_index] == expected_duration
+            assert row[no_kvd_index] == expected_duration
+            assert row[specific_index] is None
+            assert row[lnd_index] is None
+            assert row[downhole_index] is None
+            assert row[productivity_index] is None
+        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 1
+        assert sum(row[cl_previous_index] is not None for row in zero_gdi_rows) == 0
+        assert sum(row[gdm_index] is not None for row in zero_gdi_rows) == 1
+        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 3
     finally:
         workbook.close()
     with ZipFile(output) as archive:

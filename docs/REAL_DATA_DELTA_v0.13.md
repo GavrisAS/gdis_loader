@@ -37,7 +37,10 @@ Raw valid GDI — 1,600; deduplicated valid GDI — 1,599. Prefix-negative label
 `ПГИ` 4, `Рстатика, запуск в экспл` 3, `МГРП освоение` 1, `МЗС+миниКВД` 1,
 `Рпл` 1. В частности `МЗС+миниКВД` не попал в valid KVD.
 
-Независимый `scripts/reconcile_gdi.py` обработал весь eligible Береговой фонд:
+`scripts/reconcile_gdi.py` выполнил cross-check всего eligible Берегового фонда
+с повторным чтением count cells калькулятора. Lifecycle resolver, normalization,
+matching, classification и dedupe используют общие canonical production
+primitives, поэтому эту проверку нельзя называть полностью независимой:
 69 resolved rows проверены against deduplicated current lifecycle/plast records;
 9 unresolved rows оставлены вне прямого per-identity сравнения. На 69 resolved
 rows число несовпадений с колонкой `Количество ГДИ` равно **0**.

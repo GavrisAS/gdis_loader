@@ -114,6 +114,127 @@ def test_base_fund_resolves_zbs_gdi_only_through_confirmed_history() -> None:
     assert result.record.target_well_id == "11_ЗБС"
 
 
+def test_old_lifecycle_gdi_is_not_a_fallback_when_current_stage_has_no_gdi() -> None:
+    initial = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id="11",
+        plast="ПК1",
+        event_kind=WellEventKind.INITIAL,
+        started_at=PartialDate(2010, 1, 1, DatePrecision.DAY),
+        stage_sequence=0,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "C3"),
+        raw_block=(),
+    )
+    current = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id=None,
+        plast="ПК2",
+        event_kind=WellEventKind.PVLG,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "O3"),
+        raw_block=(),
+    )
+    history = WellHistory("Береговое", "11", "011", (), (initial, current))
+    old_gdi = _record(well="11", plast="ПК1", when=datetime(2022, 5, 1))
+
+    result = match_fund_well(
+        _fund(well="011", hint="ПК2"),
+        GdiIndex((old_gdi,)),
+        (history,),
+    )
+
+    assert result.status is MatchStatus.NO_GDI
+    assert not result.candidates
+
+
+def test_old_mother_gdi_is_not_a_fallback_for_current_zbs() -> None:
+    initial = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id="11",
+        plast="ПК1",
+        event_kind=WellEventKind.INITIAL,
+        started_at=PartialDate(2010, 1, 1, DatePrecision.DAY),
+        stage_sequence=0,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "C3"),
+        raw_block=(),
+    )
+    current = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id="11_ЗБС",
+        plast="ПК2",
+        event_kind=WellEventKind.ZBS,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "I3"),
+        raw_block=(),
+    )
+    history = WellHistory("Береговое", "11", "011", (), (initial, current))
+    old_gdi = _record(well="11", plast="ПК1", when=datetime(2022, 5, 1))
+
+    result = match_fund_well(
+        _fund(well="011_ЗБС", hint="ПК2"),
+        GdiIndex((old_gdi,)),
+        (history,),
+    )
+
+    assert result.status is MatchStatus.NO_GDI
+    assert not result.candidates
+
+
+def test_ambiguous_current_lifecycle_does_not_collapse_into_no_gdi() -> None:
+    initial = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id="11",
+        plast="ПК1",
+        event_kind=WellEventKind.INITIAL,
+        started_at=PartialDate(2010, 1, 1, DatePrecision.DAY),
+        stage_sequence=0,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "C3"),
+        raw_block=(),
+    )
+    pvlg = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id=None,
+        plast="ПК2",
+        event_kind=WellEventKind.PVLG,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "O3"),
+        raw_block=(),
+    )
+    pnlg = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id=None,
+        plast="ПК2",
+        event_kind=WellEventKind.PNLG,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=2,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "O4"),
+        raw_block=(),
+    )
+    history = WellHistory("Береговое", "11", "011", (), (initial, pvlg, pnlg))
+
+    result = match_fund_well(_fund(well="011", hint="ПК2"), GdiIndex(()), (history,))
+
+    assert result.status is MatchStatus.AMBIGUOUS
+    assert "нельзя определить однозначно" in result.explanation
+
+
 def test_gdi_cutoff_uses_injected_calculation_date() -> None:
     after_fund = _record(when=datetime(2026, 8, 20))
 

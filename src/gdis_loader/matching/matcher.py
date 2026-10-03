@@ -78,6 +78,23 @@ class GdiIndex:
         )
         if target_id is None:
             return ()
+        current_resolution = (
+            resolve_lifecycle_stage(fund_well, None, histories) if histories else None
+        )
+        current_stage = (
+            current_resolution.stage
+            if current_resolution is not None and current_resolution.issue is None
+            else None
+        )
+
+        def belongs_to_current_stage(record: GdiRecord) -> bool:
+            if current_stage is None:
+                return True
+            if record.normalized_plast != current_stage.plast:
+                return False
+            resolution = resolve_lifecycle_stage(fund_well, record, histories)
+            return resolution.issue is None and resolution.stage == current_stage
+
         cutoff_day = self._calculation_date or fund_well.fund_date
         cutoff = datetime.combine(cutoff_day, time.max)
         exact = tuple(
@@ -86,6 +103,7 @@ class GdiIndex:
             if record.normalized_field == fund_well.normalized_field
             and record.study_date is not None
             and record.study_date <= cutoff
+            and belongs_to_current_stage(record)
         )
         if target_id != fund_well.base_well_id:
             root_only = tuple(
@@ -95,6 +113,7 @@ class GdiIndex:
                 and record.normalized_field == fund_well.normalized_field
                 and record.study_date is not None
                 and record.study_date <= cutoff
+                and belongs_to_current_stage(record)
             )
             if fund_well.object_plast_hint is not None:
                 root_only = tuple(
@@ -117,8 +136,9 @@ class GdiIndex:
             if record.normalized_field == fund_well.normalized_field
             and record.study_date is not None
             and record.study_date <= cutoff
+            and belongs_to_current_stage(record)
         )
-        if fund_well.object_plast_hint is not None:
+        if current_stage is None and fund_well.object_plast_hint is not None:
             hinted = tuple(
                 record
                 for record in lineage
@@ -227,8 +247,31 @@ def match_fund_well(
             fund_well=fund_well,
             explanation="Номер скважины фонда не удалось нормализовать.",
         )
+    current_resolution = resolve_lifecycle_stage(fund_well, None, histories) if histories else None
+    if (
+        current_resolution is not None
+        and current_resolution.stage is None
+        and current_resolution.issue is not None
+    ):
+        return MatchResult(
+            status=MatchStatus.AMBIGUOUS,
+            fund_well=fund_well,
+            candidates=gdi_index.lineage_candidates_for(fund_well),
+            explanation=(
+                "Текущую lifecycle identity фонда нельзя определить однозначно; "
+                "записи ГДИ не используются для выбора предыдущего этапа."
+            ),
+        )
     candidates = gdi_index.candidates_for(fund_well, histories)
     if not candidates:
+        if current_resolution is not None and current_resolution.stage is not None:
+            return MatchResult(
+                status=MatchStatus.NO_GDI,
+                fund_well=fund_well,
+                explanation=(
+                    "Текущий lifecycle и пласт определены; валидной ГДИ в этой истории нет."
+                ),
+            )
         lineage = gdi_index.lineage_candidates_for(fund_well)
         unresolved_variants = tuple(
             record
@@ -316,6 +359,11 @@ def match_all(
                 if (resolution := resolve_lifecycle_stage(fund_well, record, histories)).issue
                 is not None
             )
+            current_resolution = (
+                resolve_lifecycle_stage(fund_well, None, histories) if histories else None
+            )
+            if current_resolution is not None and current_resolution.issue is not None:
+                lifecycle_issues = (current_resolution.issue, *lifecycle_issues)
             issues.extend(lifecycle_issues)
             issues.append(
                 DiagnosticIssue(

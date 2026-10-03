@@ -11,6 +11,7 @@ import pytest
 import gdis_loader.service as service
 from gdis_loader.config import CriteriaConfig
 from gdis_loader.domain.models import (
+    DailyTelemetryRow,
     DatePrecision,
     DiagnosticIssue,
     FundCategory,
@@ -579,7 +580,12 @@ def test_no_gdi_with_day_launch_writes_zero_count_and_duration_with_provenance()
     assert rows[0].gdi_count == 0
     assert rows[0].insufficient_gdi == "Да"
     assert rows[0].duration_without_gdi == (calculation - date(2020, 1, 1)).days / 365
+    assert rows[0].duration_without_id == rows[0].duration_without_gdi
+    assert rows[0].duration_without_kvd == rows[0].duration_without_gdi
     assert rows[0].specific_gdi_count is None
+    assert rows[0].downhole_sensors is None
+    assert rows[0].productivity_decline is None
+    assert rows[0].lnd is None
     assert report.gdi_count_filled == 1
     assert report.insufficient_gdi_yes == 1
     zero_count_issue = next(
@@ -593,6 +599,153 @@ def test_no_gdi_with_day_launch_writes_zero_count_and_duration_with_provenance()
         item for item in report.field_provenance if item["field"] == "Количество ГДИ"
     )
     assert count_provenance["locations"] == [SourceLocation("history.xlsx", "БЛУ", "C3").to_dict()]
+
+
+@pytest.mark.parametrize(
+    ("boundary", "fund_identity"),
+    (
+        (WellEventKind.PVLG, "22"),
+        (WellEventKind.PNLG, "22"),
+        (WellEventKind.ZBS, "22_ЗБС"),
+    ),
+)
+def test_zero_gdi_current_lifecycle_uses_launch_and_independent_sources(
+    boundary: WellEventKind,
+    fund_identity: str,
+) -> None:
+    fund_well = replace(
+        _fund_identity("Береговое", raw_well=fund_identity),
+        object_plast_hint="ПК2",
+    )
+    initial_history = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
+    pvlg = replace(
+        initial_history.stages[0],
+        target_well_id="22_ЗБС" if boundary is WellEventKind.ZBS else None,
+        plast="ПК2",
+        event_kind=boundary,
+        started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "БЛУ", "O3"),
+    )
+    history = replace(initial_history, stages=(initial_history.stages[0], pvlg))
+    old_gdi = _gdi_identity(
+        "Береговое",
+        raw_well="22",
+        raw_plast="ПК1",
+        when=datetime(2022, 5, 1),
+    )
+    lha_records = tuple(
+        LhaRecord(
+            raw_field_name="Береговое",
+            normalized_field=normalize_field_name("Береговое"),
+            raw_well_name="22",
+            base_well_id="22",
+            target_well_id="22",
+            raw_plast="ПК2",
+            normalized_plast="ПК2",
+            measured_at=when,
+            cl_value=chlorine,
+            vgf_value=vgf,
+            source_row=index,
+            source_file="lha.xlsm",
+            source_sheet="БД Сибнефтегаз",
+            date_cell=f"D{index}",
+            cl_cell=f"E{index}",
+            vgf_cell=f"F{index}",
+        )
+        for index, (when, chlorine, vgf) in enumerate(
+            (
+                (datetime(2024, 6, 1), 2000.0, 30.0),
+                (datetime(2025, 6, 1), 4000.0, 40.0),
+            ),
+            start=2,
+        )
+    )
+    status = ResearchStatusRecord(
+        raw_well_name="22",
+        base_well_id="22",
+        target_well_id="22",
+        raw_plast="ПК2",
+        normalized_plast="ПК2",
+        research_type="ИД",
+        study_date=PartialDate(2026, 9, None, DatePrecision.MONTH),
+        delta_raw=0,
+        delta_value=0.0,
+        delta_formula_without_cache=False,
+        source_row=12,
+        source_file="status.xlsx",
+        source_sheet="АР_таблица_БЛУ",
+        well_cell="A12",
+        plast_cell="B12",
+        research_type_cell="C12",
+        date_cell="D12",
+        delta_cell="J12",
+    )
+    daily = DailyTelemetryRow(
+        raw_field_name="Береговое",
+        raw_well_name="22",
+        base_well_id="22",
+        target_well_id="22",
+        source_row=10,
+        daily_values=(0.0, 1.0, 2.0),
+        source_file="daily.xlsm",
+        source_sheet="07.2026",
+        well_cell="A10",
+        daily_cells=("B10", "C10", "D10"),
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+    calculation = date(2026, 10, 1)
+
+    rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((old_gdi,)),
+        LhaIndex(lha_records),
+        report,
+        (history,),
+        calculation,
+        (status,),
+        daily_rows=(daily,),
+    )
+
+    assert report.no_gdi == 1
+    assert report.ambiguous == 0
+    assert rows[0].well == ("22_ЗБС" if boundary is WellEventKind.ZBS else "22")
+    assert rows[0].plast == "ПК2"
+    assert rows[0].launch_date == date(2023, 6, 1)
+    assert rows[0].gdi_count == 0
+    assert rows[0].insufficient_gdi == "Да"
+    assert rows[0].duration_without_gdi == (calculation - date(2023, 6, 1)).days / 365
+    assert rows[0].duration_without_id == rows[0].duration_without_gdi
+    assert rows[0].duration_without_kvd == rows[0].duration_without_gdi
+    assert rows[0].specific_gdi_count is None
+    assert rows[0].lnd is None
+    assert rows[0].downhole_sensors is None
+    assert rows[0].productivity_decline is None
+    assert rows[0].cl_current == 4000.0
+    assert rows[0].cl_previous == 2000.0
+    assert rows[0].chlorine_growth == "Да"
+    assert rows[0].vgf_current == 40.0
+    assert rows[0].vgf_previous == 30.0
+    assert rows[0].gdm_problems == "Нет"
+    assert rows[0].debit == 1.5
+    debit_provenance = next(item for item in report.field_provenance if item["field"] == "Дебит")
+    assert debit_provenance["details"]["aggregation"] == "arithmetic_mean"
+    assert debit_provenance["details"]["valid_working_days"] == 2
+
+    missing_report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+    missing_rows = _build_target_rows(
+        FundParseResult((fund_well,), date(2026, 8, 1), "01.08.2026"),
+        GdiIndex((old_gdi,)),
+        LhaIndex(lha_records),
+        missing_report,
+        (history,),
+        calculation,
+        (status,),
+        daily_rows=(),
+    )
+    assert missing_rows[0].debit is None
+    assert missing_report.debit_blank == 1
+    assert any(issue.code == "DEBIT_SOURCE_ROW_MISSING" for issue in missing_report.issues)
 
 
 @pytest.mark.parametrize(

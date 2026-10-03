@@ -1,6 +1,7 @@
-"""Independently reconcile post-launch GDI counts for a production bundle.
+"""Cross-check post-launch GDI counts for a production bundle.
 
-The script prints aggregate metrics and the four approved customer examples;
+The script reuses canonical lifecycle, matching, normalization, and dedupe
+primitives. It prints aggregate metrics and four approved customer examples;
 it never emits a per-well production dump.
 """
 
@@ -16,7 +17,12 @@ from typing import Any
 from openpyxl import load_workbook
 
 from gdis_loader.domain.dates import effective_date
-from gdis_loader.domain.models import GdiKind, MatchStatus, SourcePaths, WellEventKind
+from gdis_loader.domain.models import (
+    GdiKind,
+    MatchStatus,
+    SourcePaths,
+    WellEventKind,
+)
 from gdis_loader.matching.lifecycle import resolve_lifecycle_stage
 from gdis_loader.matching.matcher import GdiIndex, match_fund_well
 from gdis_loader.matching.normalize import normalize_field_name
@@ -24,7 +30,10 @@ from gdis_loader.readers.fund import read_fund
 from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.well_history import read_well_history
 from gdis_loader.transforms.gdi import collapse_exact_gdi_duplicates
-from gdis_loader.validation.reconciliation import application_count_state
+from gdis_loader.validation.reconciliation import (
+    application_count_state,
+    current_lifecycle_counts,
+)
 
 _VALID_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
 _CUSTOMER_WELLS = frozenset({"12", "13", "21", "22"})
@@ -52,16 +61,27 @@ def _application_counts(path: Path | None) -> dict[str, int | None]:
         workbook.close()
 
 
-def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dict[str, Any]:
-    """Compare direct source counts with independently read calculator values."""
+def reconcile(
+    paths: SourcePaths,
+    target_field: str,
+    output: Path | None,
+    calculation_date: date | None = None,
+) -> dict[str, Any]:
+    """Cross-check source counts against independently read calculator values.
+
+    Lifecycle assignment, normalization, matching, duplicate collapse, and
+    classification reuse production primitives; calculator count-cell reading
+    is the independently implemented comparison step.
+    """
 
     fund = read_fund(paths.fund)
     history_result = read_well_history(paths.well_history, target_field)
     raw_records, _issues = read_gdi(paths.gdi)
+    operation_date = calculation_date or date.today()
     field_key = normalize_field_name(target_field)
     scoped_raw = tuple(item for item in raw_records if item.normalized_field == field_key)
     deduplicated, _duplicate_issues = collapse_exact_gdi_duplicates(scoped_raw)
-    direct_index = GdiIndex(deduplicated, date.today())
+    direct_index = GdiIndex(deduplicated, operation_date)
     application = _application_counts(output)
     metrics: Counter[str] = Counter()
     examples: dict[str, dict[str, Any]] = {}
@@ -78,6 +98,8 @@ def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dic
     metrics["exact_duplicate_rows_collapsed"] = len(scoped_raw) - len(deduplicated)
     metrics["eligible_with_resolved_lifecycle"] = 0
     metrics["eligible_with_unresolved_lifecycle"] = 0
+    metrics["eligible_with_ambiguous_gdi_match"] = 0
+    metrics["current_no_gdi_identities"] = 0
     metrics["raw_valid_rows_same_root_field"] = 0
     metrics["raw_valid_rows_excluded_lifecycle_or_plast"] = 0
     metrics["raw_valid_rows_current_lifecycle_plast"] = 0
@@ -85,6 +107,27 @@ def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dic
     metrics["deduplicated_valid_rows_before_launch"] = 0
     metrics["deduplicated_valid_rows_after_launch"] = 0
     metrics["application_count_mismatches"] = 0
+
+    lifecycle_counts = current_lifecycle_counts(
+        eligible,
+        history_result.histories,
+        target_field,
+        deduplicated,
+        operation_date,
+    )
+    metrics["eligible_with_resolved_lifecycle"] = lifecycle_counts[
+        "resolved_current_lifecycle_rows"
+    ]
+    metrics["eligible_with_unresolved_lifecycle"] = (
+        lifecycle_counts["ambiguous_current_lifecycle_rows"]
+        + lifecycle_counts["unresolved_current_lifecycle_rows"]
+    )
+    metrics["gdi_crosschecked_current_lifecycle_rows"] = lifecycle_counts[
+        "gdi_crosschecked_current_lifecycle_rows"
+    ]
+    metrics.update(
+        {name: count for name, count in lifecycle_counts.items() if name.startswith("current_")}
+    )
 
     for well in eligible:
         initial = resolve_lifecycle_stage(well, None, history_result.histories)
@@ -101,12 +144,14 @@ def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dic
             if item.base_well_id == well.base_well_id and item.gdi_kind in _VALID_KINDS
         )
         metrics["raw_valid_rows_same_root_field"] += len(root_records)
-        if match.status is MatchStatus.AMBIGUOUS or stage is None or resolution.issue is not None:
-            metrics["eligible_with_unresolved_lifecycle"] += 1
+        if stage is None or resolution.issue is not None:
             metrics["raw_valid_rows_excluded_lifecycle_or_plast"] += len(root_records)
             continue
 
-        metrics["eligible_with_resolved_lifecycle"] += 1
+        if match.status is MatchStatus.AMBIGUOUS:
+            metrics["eligible_with_ambiguous_gdi_match"] += 1
+        elif match.status is MatchStatus.NO_GDI:
+            metrics["current_no_gdi_identities"] += 1
         launch = effective_date(stage.started_at)
         current_raw: list[Any] = []
         current_deduplicated: list[Any] = []
@@ -215,6 +260,10 @@ def reconcile(paths: SourcePaths, target_field: str, output: Path | None) -> dic
 
     return {
         "target_field": target_field,
+        "calculation_date": operation_date.isoformat(),
+        "reconciliation_method": (
+            "cross-check reconciliation using shared canonical business primitives"
+        ),
         "source_rows": len(scoped_raw),
         "deduplicated_source_rows": len(deduplicated),
         "metrics": dict(sorted(metrics.items())),
@@ -229,6 +278,7 @@ def main() -> None:
     parser.add_argument("--gdi", type=Path, required=True)
     parser.add_argument("--well-history", type=Path, required=True)
     parser.add_argument("--field", required=True)
+    parser.add_argument("--calculation-date", type=date.fromisoformat)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
@@ -244,6 +294,7 @@ def main() -> None:
         ),
         args.field,
         args.output,
+        args.calculation_date,
     )
     encoded = json.dumps(result, ensure_ascii=False, indent=2)
     if args.report is not None:

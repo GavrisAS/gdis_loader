@@ -1804,6 +1804,112 @@ def _build_target_rows(
                     )
         target_identity = _effective_target_identity(fund_well, None, lifecycle.stage)
         source_identity = _source_lookup_identity(fund_well, None, lifecycle.stage)
+        fund_identity = normalize_well_id(fund_well.target_well_id or fund_well.raw_display)
+        fallback_display_identity = (
+            fund_identity.base_well_id
+            if fund_identity.recognized_variant in {"ПВЛГ", "ПНЛГ"}
+            else fund_well.target_well_id or fund_well.raw_display
+        )
+        lha_values = (
+            lha_index.select(
+                base_well_id=fund_well.base_well_id or "",
+                normalized_field=fund_well.normalized_field,
+                normalized_plast=lifecycle.stage.plast,
+                cutoff=datetime.combine(operation_date, time.max),
+                target_well_id=source_identity,
+                physical_root=fund_well.base_well_id,
+                histories=histories,
+                lifecycle_stage=lifecycle.stage,
+            )
+            if lifecycle.stage is not None and lifecycle.stage.plast is not None
+            else None
+        )
+        if lha_values is not None:
+            _append_issues(report, lha_values.issues)
+        cl_current = lha_values.cl_current if lha_values else None
+        cl_previous = lha_values.cl_previous if lha_values else None
+        vgf_current = lha_values.vgf_current if lha_values else None
+        vgf_previous = lha_values.vgf_previous if lha_values else None
+        if cl_current is not None or cl_previous is not None:
+            report.with_lha_cl += 1
+        if vgf_current is not None or vgf_previous is not None:
+            report.with_lha_vgf += 1
+        if all(value is None for value in (cl_current, cl_previous, vgf_current, vgf_previous)):
+            report.without_lha += 1
+            if lha_values is None or not lha_values.issues:
+                _append_issues(
+                    report,
+                    (
+                        DiagnosticIssue(
+                            code="LHA_NOT_FOUND",
+                            severity=IssueSeverity.INFO,
+                            message=(
+                                "Для однозначно сопоставленной lifecycle-истории не найдено "
+                                "валидной точки ЛХА."
+                            ),
+                            source="lha",
+                            well_id=fund_well.base_well_id,
+                            locations=fund_well.locations,
+                        ),
+                    ),
+                )
+        chlorine_value: str | None = None
+        if cl_current is not None and cl_previous is not None:
+            chlorine_value = (
+                "Да"
+                if chlorine_growth(
+                    cl_current,
+                    cl_previous,
+                    criteria.chlorine_current_min_mg_dm3,
+                    criteria.chlorine_delta_min_mg_dm3,
+                )
+                else "Нет"
+            )
+            report.chlorine_growth_filled += 1
+            _append_field_provenance(
+                report,
+                target_identity,
+                "Рост хлора",
+                (
+                    *lha_values.values.cl_current_locations,
+                    *lha_values.values.cl_previous_locations,
+                )
+                if lha_values is not None
+                else (),
+            )
+        else:
+            _append_issues(
+                report,
+                (
+                    DiagnosticIssue(
+                        code="CHLORINE_INSUFFICIENT_HISTORY",
+                        severity=IssueSeverity.WARNING,
+                        message=(
+                            "Для роста хлора не хватает двух числовых точек Cl; значение "
+                            "оставлено пустым."
+                        ),
+                        source="lha",
+                        well_id=fund_well.base_well_id,
+                        locations=(
+                            (
+                                *lha_values.values.cl_current_locations,
+                                *lha_values.values.cl_previous_locations,
+                            )
+                            if lha_values is not None
+                            else ()
+                        ),
+                    ),
+                ),
+            )
+        if lha_values is not None:
+            for field_name, locations in (
+                ("Cl текущий", lha_values.values.cl_current_locations),
+                ("Cl предыдущий", lha_values.values.cl_previous_locations),
+                ("ВГФ текущий", lha_values.values.vgf_current_locations),
+                ("ВГФ предыдущий", lha_values.values.vgf_previous_locations),
+            ):
+                if locations:
+                    _append_field_provenance(report, target_identity, field_name, locations)
         gdm_value: str | None = None
         if match.status is MatchStatus.NO_GDI and lifecycle.stage is not None:
             gdm_candidates, gdm_issues = _status_candidates_for_target(
@@ -1905,22 +2011,63 @@ def _build_target_rows(
                     )
                 else:
                     report.debit_filled += 1
+                    _append_field_provenance(
+                        report,
+                        target_identity,
+                        "Дебит",
+                        tuple(
+                            SourceLocation(
+                                daily_item.source_file,
+                                daily_item.source_sheet,
+                                cell,
+                            )
+                            for cell, value in zip(
+                                daily_item.daily_cells,
+                                daily_item.daily_values,
+                                strict=False,
+                            )
+                            if value is not None and value > criteria.gas_rate_working_day_min_rate
+                        ),
+                        valid_working_days=valid_day_count,
+                        working_day_min_rate=criteria.gas_rate_working_day_min_rate,
+                        aggregation="arithmetic_mean",
+                    )
             else:
                 report.debit_blank += 1
+                code = daily_issue or "DEBIT_SOURCE_ROW_MISSING"
+                _append_issues(
+                    report,
+                    (
+                        DiagnosticIssue(
+                            code=code,
+                            severity=IssueSeverity.WARNING,
+                            message=(
+                                "Строка суточного рапорта не сопоставлена однозначно с текущей "
+                                "скважиной; Дебит оставлен пустым."
+                            ),
+                            source="daily_report",
+                            well_id=fund_well.base_well_id,
+                            locations=fund_well.locations,
+                        ),
+                    ),
+                )
         target_rows.append(
             TargetRow(
                 well=(
                     target_identity
                     if lifecycle.stage is not None
                     and lifecycle.stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}
-                    else fund_well.target_well_id or fund_well.raw_display
+                    else fallback_display_identity
                 ),
                 plast=lifecycle.stage.plast if lifecycle.stage is not None else None,
                 state=state,
                 launch_date=launch_date,
                 gdi_count=gdi_count,
+                chlorine_growth=chlorine_value,
                 gtm="Нет",
                 gdm_problems=gdm_value,
+                cl_current=cl_current,
+                cl_previous=cl_previous,
                 insufficient_gdi=(
                     "Да"
                     if insufficient_value is True
@@ -1931,6 +2078,8 @@ def _build_target_rows(
                 duration_without_gdi=duration_without_gdi,
                 duration_without_id=duration_without_id,
                 duration_without_kvd=duration_without_kvd,
+                vgf_current=vgf_current,
+                vgf_previous=vgf_previous,
                 debit=debit_value,
             )
         )
@@ -1951,7 +2100,6 @@ def _build_target_rows(
                 ),
             ),
         )
-        report.without_lha += 1
     _append_target_identity_collisions(target_identity_evidence, report)
     report.rows_prepared = len(target_rows)
     report.gdm_multiple_candidate_identities = sum(

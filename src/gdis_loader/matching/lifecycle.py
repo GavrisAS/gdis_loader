@@ -163,6 +163,84 @@ def _assign_unsuffixed_record_by_timeline(
     return LifecycleResolution(stage)
 
 
+def _resolve_current_fund_stage(
+    fund_well: FundWell,
+    record: GdiRecord | None,
+    history: WellHistory,
+    *,
+    expected_kind: WellEventKind | None = None,
+    zbs_ordinal: int | None = None,
+) -> LifecycleResolution:
+    """Resolve the fund's current stage from its plast and confirmed timeline."""
+
+    eligible = tuple(
+        stage
+        for stage in history.stages
+        if effective_calendar_date(stage.started_at) <= fund_well.fund_date
+    )
+    if not eligible:
+        return LifecycleResolution(None)
+
+    latest_date = max(effective_calendar_date(stage.started_at) for stage in eligible)
+    latest = tuple(
+        stage for stage in eligible if effective_calendar_date(stage.started_at) == latest_date
+    )
+    if expected_kind is not None:
+        latest = tuple(stage for stage in latest if stage.event_kind is expected_kind)
+    if zbs_ordinal is not None:
+        zbs_stages = tuple(
+            stage for stage in history.stages if stage.event_kind is WellEventKind.ZBS
+        )
+        if zbs_ordinal > len(zbs_stages):
+            return LifecycleResolution(
+                None,
+                _issue(
+                    "WELL_HISTORY_STAGE_NOT_FOUND",
+                    (
+                        f"Для обозначения ЗБС{zbs_ordinal if zbs_ordinal > 1 else ''} "
+                        "нет этапа в истории."
+                    ),
+                    fund_well,
+                    record,
+                    zbs_stages,
+                ),
+            )
+        named_stage = zbs_stages[zbs_ordinal - 1]
+        latest = tuple(stage for stage in latest if stage == named_stage)
+
+    plast = fund_well.object_plast_hint
+    if plast is not None:
+        latest = tuple(stage for stage in latest if stage.plast == plast)
+
+    # Sequential ZBS stages receive stable ordinals from the history reader.
+    # When same-day ZBS events otherwise tie, the latest confirmed ordinal is
+    # the current branch. Ties across different boundary kinds remain ambiguous.
+    if len(latest) > 1 and all(stage.event_kind is WellEventKind.ZBS for stage in latest):
+        latest = (max(latest, key=lambda stage: stage.stage_sequence),)
+
+    if len(latest) == 1:
+        return LifecycleResolution(latest[0])
+
+    ambiguity_candidates = latest or tuple(
+        stage for stage in eligible if effective_calendar_date(stage.started_at) == latest_date
+    )
+    return LifecycleResolution(
+        None,
+        _issue(
+            "WELL_HISTORY_STAGE_AMBIGUOUS",
+            (
+                "Текущий пласт фонда не соответствует единственному последнему lifecycle-этапу; "
+                "предыдущая история не используется."
+                if not latest
+                else "Для текущего состояния фонда остаются несколько совместимых этапов истории."
+            ),
+            fund_well,
+            record,
+            ambiguity_candidates,
+        ),
+    )
+
+
 def resolve_lifecycle_stage(
     fund_well: FundWell,
     record: GdiRecord | None,
@@ -251,32 +329,25 @@ def resolve_lifecycle_stage(
             ),
         )
 
+    if record is None and variant in {None, "ПВЛГ", "ПНЛГ", "ПВР", "КЛК"}:
+        return _resolve_current_fund_stage(
+            fund_well,
+            record,
+            history,
+            expected_kind=(expected_kind if variant in {"ПВЛГ", "ПНЛГ"} else None),
+        )
+
+    if record is None and variant == "ЗБС":
+        return _resolve_current_fund_stage(
+            fund_well,
+            record,
+            history,
+            expected_kind=WellEventKind.ZBS,
+            zbs_ordinal=_zbs_ordinal(identity),
+        )
+
     if variant in {None, "ПВР", "КЛК"} and record is not None and record.study_date is not None:
         return _assign_unsuffixed_record_by_timeline(fund_well, record, history)
-
-    if record is None and variant is None:
-        known_boundaries = tuple(
-            event
-            for event in history.events
-            if event.event_kind in {WellEventKind.ZBS, WellEventKind.PVLG, WellEventKind.PNLG}
-        )
-        if known_boundaries:
-            locations = [*fund_well.locations]
-            locations.extend(event.source_location for event in known_boundaries)
-            return LifecycleResolution(
-                None,
-                DiagnosticIssue(
-                    code="WELL_HISTORY_STAGE_AMBIGUOUS",
-                    severity=IssueSeverity.WARNING,
-                    message=(
-                        "Без актуальной записи ГДИ нельзя определить, относится ли фондовая "
-                        "identity к материнской скважине или к последующему этапу."
-                    ),
-                    source="well_history",
-                    well_id=fund_well.base_well_id,
-                    locations=tuple(dict.fromkeys(locations)),
-                ),
-            )
 
     if record is None or record.study_date is None:
         if variant in {"ПВР", "КЛК"}:

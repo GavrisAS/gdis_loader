@@ -24,9 +24,9 @@ launch date и история ГДИ остаются раздельными. Т
 
 ## Повторная сверка количества ГДИ
 
-Полная независимая сверка Берегового: 1,832 raw GDI rows, 1,830 после exact
-dedupe, 69 resolved eligible identities, 9 unresolved identities, 0
-необъяснимых расхождений с калькулятором. Из 768 deduplicated valid rows текущих
+Cross-check сверка Берегового с повторным чтением count cells калькулятора:
+1,832 raw GDI rows, 1,830 после exact dedupe, 69 resolved eligible identities,
+9 unresolved identities, 0 необъяснимых расхождений с калькулятором. Из 768 deduplicated valid rows текущих
 lifecycle/plast 16 относятся к дате до запуска и 751 — к запуску или позже;
 одна строка без даты не включается в счётчик.
 
@@ -67,3 +67,12 @@ Runtime diagnostic теперь описывает требование как �
 - множества ZIP entries совпадают; каждый нетаргетный ZIP entry byte-identical.
 
 Листы формул и прочие части книги не менялись.
+
+## Исправление подсчёта PVLG в v0.15
+
+Указанные выше 2 current PVLG identities были занижены из-за прежнего audit
+подсчёта. Исправленный cross-check группирует PVLG/PNLG identity по physical
+root и проверяет latest lifecycle boundary отдельно от source display suffix.
+На неизменившемся production bundle это даёт 3 current PVLG identities: roots
+54, 10803 и 10601. Это исправляет reconciliation aggregate, а не меняет
+исторический v0.14 output.
