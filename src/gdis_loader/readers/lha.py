@@ -135,6 +135,26 @@ class LhaIndex:
                 )
                 != root
             ]
+            assigned_exact: list[LhaRecord] = []
+            for record in eligible:
+                if record.measured_at is None:
+                    continue
+                assignment = assign_stage_by_date(
+                    physical_root=root,
+                    normalized_field=normalized_field,
+                    normalized_plast=normalized_plast,
+                    observed_at=record.measured_at,
+                    histories=histories,
+                    target_identity=record.target_well_id,
+                    observation_location=SourceLocation(
+                        record.source_file, record.source_sheet, record.date_cell
+                    ),
+                )
+                if assignment.issue is not None:
+                    lifecycle_issues.append(assignment.issue)
+                if assignment.stage == lifecycle_stage:
+                    assigned_exact.append(record)
+            eligible = assigned_exact
             root_records = tuple(
                 record
                 for record in self._records

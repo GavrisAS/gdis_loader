@@ -728,6 +728,14 @@ def smoke_test(expected_version: str | None = None) -> int:
     if not isinstance(location, Path) or not location.parent.is_dir():
         raise RuntimeError(f"Недоступен каталог config.toml: {location}")
     if getattr(sys, "frozen", False):
+        from gdis_loader.source_manifest import build_source_manifest
+
+        manifest = build_source_manifest(Path(sys.executable).resolve().parent)
+        commit = manifest["git_commit"]
+        if not isinstance(commit, str) or len(commit) != 40:
+            raise RuntimeError("Frozen manifest должен содержать встроенный git commit.")
+        if manifest["release_tag"] != f"v{__version__}":
+            raise RuntimeError("Версия frozen manifest не совпадает со встроенной версией.")
         executable_directory = Path(sys.executable).resolve().parent
         if location.parent != executable_directory:
             raise RuntimeError("В frozen-режиме config.toml должен находиться рядом с EXE.")

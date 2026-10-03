@@ -52,6 +52,7 @@ from gdis_loader.readers.gdi import read_gdi
 from gdis_loader.readers.lha import LhaIndex, read_lha
 from gdis_loader.readers.research_status import STATUS_SHEETS, read_research_status
 from gdis_loader.readers.well_history import FIELD_SHEETS, read_well_history
+from gdis_loader.source_manifest import build_source_manifest, criteria_snapshot
 from gdis_loader.transforms.aggregates import (
     chlorine_growth,
     count_gdi_since_launch,
@@ -227,6 +228,12 @@ def _new_report(
     target_field: str | None = None,
 ) -> LoadReport:
     return LoadReport(
+        source_manifest=build_source_manifest(
+            Path(__file__).resolve().parents[2],
+            paths=paths,
+            calculation_date=calculation_date.isoformat(),
+            selected_field=target_field,
+        ),
         timestamp=datetime.now(UTC).isoformat(),
         app_version=__version__,
         python_version=platform.python_version(),
@@ -300,6 +307,13 @@ def _report_progress(progress: ProgressCallback | None, percent: int, stage: str
 
 
 def _write_report(report: LoadReport, path: Path) -> None:
+    output = report.output_path
+    if output and Path(output).is_file():
+        from gdis_loader.source_manifest import _file_entry
+
+        sources = report.source_manifest.get("sources", [])
+        sources[:] = [entry for entry in sources if entry["role"] != "generated_calculator"]
+        sources.append(_file_entry("generated_calculator", Path(output).name, Path(output)))
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_name: str | None = None
     try:
@@ -473,8 +487,6 @@ def _effective_target_identity(
     fund_well: FundWell, record: GdiRecord | None, stage: WellStage | None
 ) -> str | None:
     if stage is not None:
-        if stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
-            return stage.physical_root
         if stage.target_well_id:
             return stage.target_well_id
         if stage.event_kind is WellEventKind.INITIAL:
@@ -497,9 +509,12 @@ def _source_lookup_identity(
 
     if stage is not None and stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
         source_identity = record.target_well_id if record is not None else fund_well.target_well_id
-        if source_identity and source_identity != stage.physical_root:
+        if source_identity and normalize_well_id(source_identity).recognized_variant in {
+            "ПВЛГ",
+            "ПНЛГ",
+        }:
             return source_identity
-        return stage.physical_root
+        return _effective_target_identity(fund_well, record, stage)
     return _effective_target_identity(fund_well, record, stage)
 
 
@@ -642,6 +657,7 @@ def _status_candidates_for_target(
                     normalized_plast=normalized_plast or "",
                     observed_at=record.study_date,
                     histories=histories,
+                    target_identity=record.target_well_id,
                     observation_location=SourceLocation(
                         record.source_file,
                         record.source_sheet,
@@ -1911,7 +1927,7 @@ def _build_target_rows(
                 if locations:
                     _append_field_provenance(report, target_identity, field_name, locations)
         gdm_value: str | None = None
-        if match.status is MatchStatus.NO_GDI and lifecycle.stage is not None:
+        if lifecycle.stage is not None:
             gdm_candidates, gdm_issues = _status_candidates_for_target(
                 fund_well,
                 source_identity or target_identity or fund_well.raw_display,
@@ -1971,7 +1987,7 @@ def _build_target_rows(
                     ),
                 )
         debit_value: float | None = None
-        if match.status is MatchStatus.NO_GDI:
+        if lifecycle.stage is not None:
             daily_item, daily_issue = _daily_record_for_target(
                 fund_well,
                 source_identity or target_identity or fund_well.raw_display,
@@ -2051,13 +2067,33 @@ def _build_target_rows(
                         ),
                     ),
                 )
+        if lifecycle.stage is None:
+            report.debit_blank += 1
+            report.gdm_blank += 1
+            _append_issues(
+                report,
+                tuple(
+                    DiagnosticIssue(
+                        code=code,
+                        severity=IssueSeverity.WARNING,
+                        message=(
+                            "Текущая lifecycle identity не разрешена; "
+                            "независимое поле оставлено пустым."
+                        ),
+                        source=source,
+                        well_id=fund_well.base_well_id,
+                        locations=fund_well.locations,
+                    )
+                    for code, source in (
+                        ("DEBIT_LIFECYCLE_UNRESOLVED", "daily_report"),
+                        ("GDM_LIFECYCLE_UNRESOLVED", "research_status"),
+                    )
+                ),
+            )
         target_rows.append(
             TargetRow(
                 well=(
-                    target_identity
-                    if lifecycle.stage is not None
-                    and lifecycle.stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}
-                    else fallback_display_identity
+                    target_identity if lifecycle.stage is not None else fallback_display_identity
                 ),
                 plast=lifecycle.stage.plast if lifecycle.stage is not None else None,
                 state=state,
@@ -2337,6 +2373,14 @@ def run_update(
     criteria = criteria_config or CriteriaConfig()
     report = _new_report(paths, operation_date, target_field.strip() or None)
     report.criteria_snapshot = _criteria_snapshot(criteria, criteria_explicit_fields, config_source)
+    report.source_manifest["criteria"] = criteria_snapshot(criteria)
+    report.source_manifest["criteria_source"] = (
+        "defaults"
+        if not criteria_explicit_fields
+        else "config"
+        if criteria_explicit_fields == frozenset(criteria.as_dict())
+        else "mixed"
+    )
     report.config_source = str(config_source) if config_source is not None else None
     LOGGER.info("Начало обновления; target_field=%s", target_field)
     _report_progress(progress, 10, "Проверка путей и структуры файлов")
@@ -2386,6 +2430,7 @@ def run_update(
     report.log_path = str(actual_log_path.resolve())
     effective_paths = replace(paths, output=output_path)
     report.target_field = selected_field
+    report.source_manifest["selected_field"] = selected_field
     report.input_paths["output"] = str(output_path.resolve())
     report.diagnostic_path = str(diagnostic_path(output_path, paths.calculator).resolve())
     try:

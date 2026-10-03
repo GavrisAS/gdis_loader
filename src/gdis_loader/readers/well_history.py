@@ -22,6 +22,7 @@ from gdis_loader.domain.models import (
     WellHistoryParseResult,
     WellStage,
 )
+from gdis_loader.matching.lifecycle import propagate_stage_identities
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.common import (
     as_text,
@@ -353,23 +354,12 @@ def read_well_history(
                     }
                     and event_date is not None
                 ):
-                    zbs_ordinal = (
-                        sum(stage.event_kind is WellEventKind.ZBS for stage in stages) + 1
-                        if kind is WellEventKind.ZBS
-                        else None
-                    )
-                    stage_identity = (
-                        f"{physical_root}_ЗБС"
-                        + (str(zbs_ordinal) if zbs_ordinal and zbs_ordinal > 1 else "")
-                        if zbs_ordinal is not None
-                        else None
-                    )
                     stages.append(
                         WellStage(
                             field_name=field_name,
                             physical_root=physical_root,
                             source_display_well=display_well,
-                            target_well_id=stage_identity,
+                            target_well_id=None,
                             plast=event_plast,
                             event_kind=kind,
                             started_at=event_date,
@@ -388,7 +378,7 @@ def read_well_history(
                 )
             )
         return WellHistoryParseResult(
-            histories=tuple(histories),
+            histories=tuple(propagate_stage_identities(history) for history in histories),
             issues=tuple(issues),
             event_counts=dict(sorted(event_counts.items())),
             date_precision_counts=dict(sorted(precision_counts.items())),

@@ -17,7 +17,7 @@ from gdis_loader.domain.models import (
     WellHistory,
     WellStage,
 )
-from gdis_loader.matching.lifecycle import resolve_lifecycle_stage
+from gdis_loader.matching.lifecycle import attach_active_fund_branches, resolve_lifecycle_stage
 from gdis_loader.matching.normalize import normalize_well_id
 
 RATING_GDI_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
@@ -349,7 +349,7 @@ def match_all(
 
     results: list[MatchResult] = []
     issues: list[DiagnosticIssue] = []
-    for fund_well in fund_wells:
+    for fund_well in attach_active_fund_branches(tuple(fund_wells)):
         result = match_fund_well(fund_well, gdi_index, histories)
         results.append(result)
         if result.status is MatchStatus.AMBIGUOUS:

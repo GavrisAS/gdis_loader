@@ -30,8 +30,6 @@ def application_count_state(
 
 
 def _canonical_current_identity(stage: WellStage) -> str:
-    if stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
-        return stage.physical_root
     if stage.target_well_id is not None:
         return stage.target_well_id
     if stage.event_kind is WellEventKind.ZBS:
@@ -110,7 +108,7 @@ def current_lifecycle_counts(
     Direct resolution uses fund plast and history. If those conflict, a valid
     GDI row may cross-check the already unique latest boundary stage; it does
     not change the loader's fund-plast eligibility decision. PVLG and PNLG
-    identities use the physical root because those events retain display number.
+    identities inherit the canonical identity of their confirmed parent stage.
     """
 
     field_key = normalize_field_name(target_field)

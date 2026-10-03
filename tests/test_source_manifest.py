@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from gdis_loader.config import CriteriaConfig
+from gdis_loader.domain.models import SourcePaths
 from gdis_loader.source_manifest import SOURCE_FILES, build_source_manifest
+
+
+def _runtime_paths(root: Path) -> SourcePaths:
+    return SourcePaths(**{role: root / "data" / name for role, name in SOURCE_FILES})
 
 
 def test_source_manifest_hashes_fixture_file_and_uses_deterministic_order(
@@ -23,6 +29,7 @@ def test_source_manifest_hashes_fixture_file_and_uses_deterministic_order(
 
     first = build_source_manifest(
         tmp_path,
+        paths=_runtime_paths(tmp_path),
         audit_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
@@ -32,6 +39,7 @@ def test_source_manifest_hashes_fixture_file_and_uses_deterministic_order(
     )
     second = build_source_manifest(
         tmp_path,
+        paths=_runtime_paths(tmp_path),
         audit_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
@@ -49,6 +57,7 @@ def test_source_manifest_hashes_fixture_file_and_uses_deterministic_order(
 def test_source_manifest_records_missing_inputs_without_invented_hashes(tmp_path: Path) -> None:
     manifest = build_source_manifest(
         tmp_path,
+        paths=_runtime_paths(tmp_path),
         audit_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
@@ -72,6 +81,7 @@ def test_manifest_contains_only_metadata_not_source_bytes_or_absolute_paths(
     encoded = json.dumps(
         build_source_manifest(
             tmp_path,
+            paths=_runtime_paths(tmp_path),
             audit_timestamp_utc="2026-10-03T00:00:00+00:00",
             git_commit="abc123",
             release_tag="v0.15",
@@ -92,6 +102,7 @@ def test_generated_calculator_is_hashed_without_being_included(tmp_path: Path) -
 
     manifest = build_source_manifest(
         tmp_path,
+        paths=_runtime_paths(tmp_path),
         audit_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
@@ -151,3 +162,69 @@ def test_audit_includes_manifest_and_excludes_workbooks_and_user_config(
         assert [item["role"] for item in manifest["sources"]] == [
             role for role, _name in SOURCE_FILES
         ]
+
+
+def test_runtime_custom_file_overrides_neighbor_and_serializes_criteria(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    paths = _runtime_paths(tmp_path)
+    paths.calculator.parent.mkdir()
+    paths.calculator.write_bytes(b"old canonical bytes")
+    selected = tmp_path / "custom chosen.xlsx"
+    selected.write_bytes(b"actual selected bytes")
+    criteria = CriteriaConfig(gdm_abs_delta_threshold=7.0)
+    manifest = build_source_manifest(
+        tmp_path,
+        paths=replace(paths, calculator=selected),
+        criteria=criteria,
+        criteria_explicit_fields=frozenset({"gdm_abs_delta_threshold"}),
+    )
+    assert manifest["sources"][0]["name"] == selected.name
+    assert manifest["sources"][0]["sha256"] == hashlib.sha256(selected.read_bytes()).hexdigest()
+    assert manifest["criteria"]["gdm"]["abs_delta_threshold"] == 7.0
+    assert manifest["criteria_source"] == "mixed"
+    assert str(tmp_path) not in json.dumps(manifest)
+    defaults = build_source_manifest(tmp_path, paths=paths)
+    assert defaults["criteria"]["insufficient_gdi"]["min_count"] == 2
+    assert defaults["criteria_source"] == "defaults"
+
+
+def test_windows_path_is_never_serialized_as_an_absolute_name(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    paths = replace(_runtime_paths(tmp_path), fund=Path(r"C:\Users\private\custom fund.xlsx"))
+    manifest = build_source_manifest(tmp_path, paths=paths)
+    entry = next(item for item in manifest["sources"] if item["role"] == "fund")
+    assert entry["name"] == "custom fund.xlsx"
+    assert r"C:\Users" not in json.dumps(manifest)
+
+
+def test_manifest_works_without_git_executable(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import gdis_loader.source_manifest as module
+
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("git is not installed")
+
+    monkeypatch.setattr(module.subprocess, "run", unavailable)
+    manifest = build_source_manifest(tmp_path, paths=_runtime_paths(tmp_path))
+    assert manifest["git_commit"] is None
+    assert manifest["release_tag"] is None
+
+
+def test_frozen_manifest_uses_embedded_metadata_without_git(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import sys
+    from types import ModuleType
+
+    import gdis_loader.source_manifest as module
+
+    build = ModuleType("gdis_loader._build_version")
+    build.BUILD_VERSION = "0.16"  # ty: ignore[unresolved-attribute]
+    build.BUILD_COMMIT = "abcdef"  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, "gdis_loader._build_version", build)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        module, "_git_value", lambda *_args: pytest.fail("frozen app must not run git")
+    )
+    manifest = build_source_manifest(tmp_path, paths=_runtime_paths(tmp_path))
+    assert manifest["git_commit"] == "abcdef"
+    assert manifest["release_tag"] == "v0.16"

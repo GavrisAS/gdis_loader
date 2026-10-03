@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
+from enum import StrEnum
 
 from gdis_loader.domain.dates import (
     effective_calendar_date,
@@ -20,7 +21,14 @@ from gdis_loader.domain.models import (
     WellHistory,
     WellStage,
 )
+from gdis_loader.matching.fund_scope import parse_fund_object_scope
 from gdis_loader.matching.normalize import normalize_field_name, normalize_well_id
+
+
+class LifecycleStatus(StrEnum):
+    RESOLVED = "RESOLVED"
+    AMBIGUOUS = "AMBIGUOUS"
+    NOT_FOUND = "NOT_FOUND"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +37,71 @@ class LifecycleResolution:
 
     stage: WellStage | None
     issue: DiagnosticIssue | None = None
+
+    @property
+    def status(self) -> LifecycleStatus:
+        if self.stage is not None:
+            return LifecycleStatus.RESOLVED
+        return LifecycleStatus.AMBIGUOUS if self.issue is not None else LifecycleStatus.NOT_FOUND
+
+    @property
+    def identity(self) -> str | None:
+        return self.stage.target_well_id if self.stage is not None else None
+
+    @property
+    def plast(self) -> str | None:
+        return self.stage.plast if self.stage is not None else None
+
+
+def propagate_stage_identities(history: WellHistory) -> WellHistory:
+    """Carry canonical identity through dated boundaries in confirmed source order."""
+    stages: list[WellStage] = []
+    ordinal = 0
+    for stage in history.stages:
+        parent = stages[-1] if stages else None
+        identity = (
+            stage.target_well_id or normalize_well_id(history.source_display_well).target_well_id
+        )
+        stage_ordinal = None
+        if stage.event_kind is WellEventKind.ZBS:
+            ordinal += 1
+            stage_ordinal = ordinal
+            identity = f"{stage.physical_root}_ЗБС" + (str(ordinal) if ordinal > 1 else "")
+        elif stage.event_kind in {WellEventKind.PVLG, WellEventKind.PNLG}:
+            identity = parent.target_well_id if parent is not None else None
+            stage_ordinal = parent.ordinal if parent is not None else None
+        stages.append(
+            replace(
+                stage,
+                target_well_id=identity,
+                parent_stage_id=parent.stage_sequence if parent else None,
+                ordinal=stage_ordinal,
+            )
+        )
+    return replace(history, stages=tuple(stages))
+
+
+def attach_active_fund_branches(wells: tuple[FundWell, ...]) -> tuple[FundWell, ...]:
+    """Retain explicit active sibling identities as a constraint for root-only rows."""
+    return tuple(
+        replace(
+            well,
+            active_zbs_identities=tuple(
+                sorted(
+                    {
+                        other.target_well_id
+                        for other in wells
+                        if other.is_rating_eligible
+                        and other.base_well_id == well.base_well_id
+                        and other.normalized_field == well.normalized_field
+                        and other.target_well_id is not None
+                        and normalize_well_id(other.target_well_id).recognized_variant == "ЗБС"
+                    }
+                )
+            ),
+        )
+        for well in wells
+    )
 
 
 def _variant_kind(identity: str) -> str | None:
@@ -181,40 +254,61 @@ def _resolve_current_fund_stage(
     if not eligible:
         return LifecycleResolution(None)
 
-    latest_date = max(effective_calendar_date(stage.started_at) for stage in eligible)
-    latest = tuple(
-        stage for stage in eligible if effective_calendar_date(stage.started_at) == latest_date
-    )
-    if expected_kind is not None:
-        latest = tuple(stage for stage in latest if stage.event_kind is expected_kind)
+    scope = parse_fund_object_scope(fund_well.object_name)
+    if scope.plast_range is None and fund_well.object_plast_hint is not None:
+        scope = replace(scope, exact_plast=fund_well.object_plast_hint)
     if zbs_ordinal is not None:
-        zbs_stages = tuple(
-            stage for stage in history.stages if stage.event_kind is WellEventKind.ZBS
-        )
+        zbs_stages = tuple(stage for stage in eligible if stage.event_kind is WellEventKind.ZBS)
         if zbs_ordinal > len(zbs_stages):
             return LifecycleResolution(
                 None,
                 _issue(
                     "WELL_HISTORY_STAGE_NOT_FOUND",
-                    (
-                        f"Для обозначения ЗБС{zbs_ordinal if zbs_ordinal > 1 else ''} "
-                        "нет этапа в истории."
-                    ),
+                    "Ordinal ЗБС отсутствует в истории.",
                     fund_well,
                     record,
                     zbs_stages,
                 ),
             )
         named_stage = zbs_stages[zbs_ordinal - 1]
-        latest = tuple(stage for stage in latest if stage == named_stage)
-
-    plast = fund_well.object_plast_hint
-    if plast is not None:
-        latest = tuple(stage for stage in latest if stage.plast == plast)
-
-    # Sequential ZBS stages receive stable ordinals from the history reader.
-    # When same-day ZBS events otherwise tie, the latest confirmed ordinal is
-    # the current branch. Ties across different boundary kinds remain ambiguous.
+        branch_identity = named_stage.target_well_id
+        eligible = tuple(
+            stage
+            for stage in eligible
+            if stage == named_stage
+            or (
+                branch_identity is not None
+                and stage.target_well_id == branch_identity
+                and stage.stage_sequence >= named_stage.stage_sequence
+            )
+        )
+    if zbs_ordinal is None and len(fund_well.active_zbs_identities) > 1:
+        active = tuple(
+            stage
+            for stage in eligible
+            if stage.target_well_id in fund_well.active_zbs_identities
+            and scope.compatible(stage.plast)
+        )
+        if len({stage.target_well_id for stage in active}) > 1:
+            return LifecycleResolution(
+                None,
+                _issue(
+                    "WELL_HISTORY_ACTIVE_BRANCH_AMBIGUOUS",
+                    "Root-only фонд совместим с несколькими работающими ordinal ЗБС.",
+                    fund_well,
+                    record,
+                    active,
+                ),
+            )
+    latest_date = max(effective_calendar_date(stage.started_at) for stage in eligible)
+    latest = tuple(
+        stage
+        for stage in eligible
+        if effective_calendar_date(stage.started_at) == latest_date
+        and scope.compatible(stage.plast)
+        and (expected_kind is None or zbs_ordinal is not None or stage.event_kind is expected_kind)
+    )
+    # Same-day sequential boundaries have a confirmed order in the source history.
     if len(latest) > 1 and all(stage.event_kind is WellEventKind.ZBS for stage in latest):
         latest = (max(latest, key=lambda stage: stage.stage_sequence),)
 
@@ -433,23 +527,41 @@ def resolve_lifecycle_stage(
             )
         return LifecycleResolution(stages[0])
 
-    study_date = record.study_date
     all_stages = history.stages
-    study_day = effective_calendar_date(study_date)
+    study_day = effective_calendar_date(record.study_date)
     preceding = tuple(
         stage for stage in all_stages if study_day >= effective_calendar_date(stage.started_at)
     )
+    if variant == "ЗБС":
+        all_zbs = tuple(stage for stage in all_stages if stage.event_kind is WellEventKind.ZBS)
+        ordinal = _zbs_ordinal(identity)
+        if ordinal > len(all_zbs):
+            return LifecycleResolution(
+                None,
+                _issue(
+                    "WELL_HISTORY_STAGE_NOT_FOUND",
+                    "Ordinal ЗБС отсутствует в истории.",
+                    fund_well,
+                    record,
+                    all_zbs,
+                ),
+            )
+        named = all_zbs[ordinal - 1]
+        preceding = tuple(
+            stage
+            for stage in preceding
+            if stage == named
+            or (
+                named.target_well_id is not None
+                and stage.target_well_id == named.target_well_id
+                and stage.stage_sequence >= named.stage_sequence
+            )
+        )
     if not preceding:
         return LifecycleResolution(None)
+    latest_date = max(effective_calendar_date(stage.started_at) for stage in preceding)
     latest = tuple(
-        stage
-        for stage in preceding
-        if not any(
-            other is not stage
-            and effective_calendar_date(other.started_at)
-            > effective_calendar_date(stage.started_at)
-            for other in preceding
-        )
+        stage for stage in preceding if effective_calendar_date(stage.started_at) == latest_date
     )
     if len(latest) != 1:
         return LifecycleResolution(
@@ -459,56 +571,12 @@ def resolve_lifecycle_stage(
                 "Несколько подтвержденных этапов могут предшествовать этой записи ГДИ.",
                 fund_well,
                 record,
-                latest or preceding,
+                latest,
             ),
         )
     selected = latest[0]
     if variant == "ЗБС":
-        all_zbs = tuple(
-            sorted(
-                (stage for stage in all_stages if stage.event_kind is WellEventKind.ZBS),
-                key=lambda stage: (
-                    stage.started_at.year,
-                    stage.started_at.month or 1,
-                    stage.started_at.day or 1,
-                    stage.stage_sequence,
-                ),
-            )
-        )
-        ordinal = _zbs_ordinal(identity)
-        if ordinal > len(all_zbs):
-            return LifecycleResolution(
-                None,
-                _issue(
-                    "WELL_HISTORY_STAGE_NOT_FOUND",
-                    f"Для обозначения ЗБС{ordinal if ordinal > 1 else ''} нет этапа в истории.",
-                    fund_well,
-                    record,
-                    all_zbs,
-                ),
-            )
-        named_stage = all_zbs[ordinal - 1]
-        if named_stage not in preceding:
-            return LifecycleResolution(None)
-        later_boundaries = tuple(
-            stage
-            for stage in preceding
-            if stage is not named_stage
-            and effective_calendar_date(stage.started_at)
-            > effective_calendar_date(named_stage.started_at)
-        )
-        if later_boundaries:
-            return LifecycleResolution(
-                None,
-                _issue(
-                    "WELL_HISTORY_STAGE_AMBIGUOUS",
-                    "Дата ГДИ относится к периоду после более поздней lifecycle-границы.",
-                    fund_well,
-                    record,
-                    (named_stage, *later_boundaries),
-                ),
-            )
-        selected = named_stage
+        expected_kind = selected.event_kind
     if selected.event_kind is not expected_kind or (plast is not None and selected.plast != plast):
         return LifecycleResolution(
             None,
@@ -531,6 +599,7 @@ def assign_stage_by_date(
     observed_at: datetime | PartialDate,
     histories: tuple[WellHistory, ...],
     observation_location: SourceLocation,
+    target_identity: str | None = None,
 ) -> LifecycleResolution:
     """Assign an unsuffixed source row to a unique confirmed lifecycle stage.
 
@@ -545,7 +614,13 @@ def assign_stage_by_date(
         for history in histories
         if history.physical_root == physical_root
         and normalize_field_name(history.field_name) == normalized_field
-        and normalize_well_id(history.source_display_well).target_well_id == physical_root
+        and normalize_well_id(history.source_display_well).target_well_id
+        == (
+            target_identity
+            if target_identity is not None
+            and normalize_well_id(target_identity).recognized_variant in {"ГС", "МЗС"}
+            else physical_root
+        )
     )
     if len(candidates) != 1:
         relevant_stages = tuple(stage for history in candidates for stage in history.stages)
@@ -567,6 +642,11 @@ def assign_stage_by_date(
         and event.event_date is None
     )
     all_stages = history.stages
+    if (
+        target_identity is not None
+        and normalize_well_id(target_identity).recognized_variant == "ЗБС"
+    ):
+        all_stages = tuple(stage for stage in all_stages if stage.target_well_id == target_identity)
     preceding = tuple(
         stage
         for stage in all_stages

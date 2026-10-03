@@ -79,6 +79,9 @@ fi
 if [ -n "${GDIS_AUDIT_GENERATED_CALCULATOR:-}" ]; then
     manifest_args+=(--generated-calculator "$GDIS_AUDIT_GENERATED_CALCULATOR")
 fi
+if [ -n "${GDIS_AUDIT_RUNTIME_REPORT:-}" ]; then
+    manifest_args+=(--runtime-report "$GDIS_AUDIT_RUNTIME_REPORT")
+fi
 uv run python scripts/source_manifest.py "${manifest_args[@]}"
 
 git tag --list > "$stage/GIT_TAGS.txt"

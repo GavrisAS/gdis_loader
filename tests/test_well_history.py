@@ -131,7 +131,7 @@ def test_pnlg_creates_new_history_but_keeps_source_well_number(tmp_path: Path) -
     pnlg = history.stages[-1]
 
     assert pnlg.event_kind is WellEventKind.PNLG
-    assert pnlg.target_well_id is None
+    assert pnlg.target_well_id == "51_ЗБС"
     assert pnlg.source_display_well == "051"
     assert pnlg.plast == "ПК3"
 

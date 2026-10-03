@@ -71,7 +71,9 @@ def _stage(kind: WellEventKind, start: PartialDate, plast: str, row: int) -> Wel
         field_name="Береговое",
         physical_root="51",
         source_display_well="051",
-        target_well_id=None,
+        target_well_id=("51_ЗБС2" if row == 6 else "51_ЗБС")
+        if kind in {WellEventKind.ZBS, WellEventKind.PVLG, WellEventKind.PNLG}
+        else "51",
         plast=normalize_plast(plast),
         event_kind=kind,
         started_at=start,
@@ -136,7 +138,7 @@ def test_pvlg_keeps_separate_history_with_same_display_well_number() -> None:
     assert after_pvlg.stage is not None
     assert after_pvlg.stage.event_kind is WellEventKind.PVLG
     assert _effective_target_identity(fund, None, before_pvlg.stage) == "51"
-    assert _effective_target_identity(fund, after_pvlg_record, after_pvlg.stage) == "51"
+    assert _effective_target_identity(fund, after_pvlg_record, after_pvlg.stage) == "51_ЗБС"
 
 
 def test_unsuffixed_gdi_after_zbs_maps_by_date_and_exact_plast() -> None:
@@ -397,3 +399,71 @@ def test_lha_old_plast_does_not_cross_a_confirmed_plast_transfer() -> None:
 
     assert resolution.stage is None
     assert resolution.issue is None
+
+
+def test_current_ordinal_siblings_and_inherited_branch() -> None:
+    from gdis_loader.matching.lifecycle import propagate_stage_identities
+
+    original = _history()
+    zbs2 = replace(
+        original.stages[1],
+        plast="ПК16",
+        started_at=PartialDate(2022, 1, 1, DatePrecision.DAY),
+        stage_sequence=2,
+    )
+    pvlg = replace(original.stages[2], plast="ПК17", stage_sequence=3)
+    history = propagate_stage_identities(
+        replace(
+            original,
+            stages=(original.stages[0], replace(original.stages[1], plast="ПК15"), pvlg, zbs2),
+        )
+    )
+    # Source order specifies the PVLG parent; the sibling has its own ordinal.
+    first = resolve_lifecycle_stage(_fund("51_ЗБС", "ПК17"), None, (history,))
+    second = resolve_lifecycle_stage(_fund("51_ЗБС2", "ПК16"), None, (history,))
+    assert first.stage is not None and first.stage.event_kind is WellEventKind.PVLG
+    assert first.stage.target_well_id == "51_ЗБС"
+    assert second.stage is not None and second.stage.target_well_id == "51_ЗБС2"
+
+
+def test_range_current_stage_does_not_fallback_to_old_gdi() -> None:
+    from gdis_loader.domain.models import MatchStatus
+    from gdis_loader.matching.matcher import GdiIndex, match_fund_well
+
+    history = _history()
+    fund = replace(_fund("51", "ПК2"), object_name="Береговой (ПК1-17)", object_plast_hint=None)
+    result = match_fund_well(
+        fund, GdiIndex((_record("51", datetime(2021, 4, 1), "ПК1"),)), (history,)
+    )
+    assert result.status is MatchStatus.NO_GDI
+
+
+def test_root_row_does_not_choose_between_explicit_active_siblings() -> None:
+    from gdis_loader.matching.lifecycle import (
+        attach_active_fund_branches,
+        propagate_stage_identities,
+    )
+
+    history = _history()
+    second = replace(
+        history.stages[1],
+        plast="ПК16",
+        started_at=PartialDate(2022, 1, 1, DatePrecision.DAY),
+        stage_sequence=2,
+    )
+    history = propagate_stage_identities(
+        replace(
+            history, stages=(history.stages[0], replace(history.stages[1], plast="ПК15"), second)
+        )
+    )
+    wells = attach_active_fund_branches(
+        tuple(
+            replace(_fund(identity), object_name="Береговой (ПК9-17)", object_plast_hint=None)
+            for identity in ("51", "51_ЗБС", "51_ЗБС2")
+        )
+    )
+    root = resolve_lifecycle_stage(wells[0], None, (history,))
+    assert root.stage is None and root.issue is not None
+    assert root.issue.code == "WELL_HISTORY_ACTIVE_BRANCH_AMBIGUOUS"
+    assert resolve_lifecycle_stage(wells[1], None, (history,)).identity == "51_ЗБС"
+    assert resolve_lifecycle_stage(wells[2], None, (history,)).identity == "51_ЗБС2"

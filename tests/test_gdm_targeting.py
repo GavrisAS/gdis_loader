@@ -107,8 +107,8 @@ def test_gdm_uses_current_lifecycle_and_plast_but_all_research_types() -> None:
 
 def test_pvlg_source_suffix_keeps_gdm_lookup_on_pvlg_history() -> None:
     initial = _stage(WellEventKind.INITIAL, "22", date(2020, 1, 1), 3, "ПК1")
-    pvlg = _stage(WellEventKind.PVLG, "22_ПВЛГ", date(2023, 6, 1), 4, "ПК2")
-    pnlg = _stage(WellEventKind.PNLG, "22_ПНЛГ", date(2025, 1, 1), 5, "ПК2")
+    pvlg = _stage(WellEventKind.PVLG, "22", date(2023, 6, 1), 4, "ПК2")
+    pnlg = _stage(WellEventKind.PNLG, "22", date(2025, 1, 1), 5, "ПК2")
     history = WellHistory("Береговое", "22", "022", (), (initial, pvlg, pnlg))
     fund_well = FundWell(
         raw_display="22_ПВЛГ",
@@ -141,4 +141,28 @@ def test_pvlg_source_suffix_keeps_gdm_lookup_on_pvlg_history() -> None:
     assert display_identity == "22"
     assert lookup_identity == "22_ПВЛГ"
     assert selected == (pvlg_status, root_only_status)
+    assert not issues
+
+
+def test_explicit_gdm_ordinal_is_not_blocked_by_newer_sibling() -> None:
+    first = _stage(WellEventKind.ZBS, "22_ЗБС", date(2021, 1, 1), 4, "ПК15")
+    second = _stage(WellEventKind.ZBS, "22_ЗБС2", date(2022, 1, 1), 5, "ПК16")
+    history = WellHistory("Береговое", "22", "022", (), (first, second))
+    fund = FundWell(
+        raw_display="22_ЗБС",
+        base_well_id="22",
+        target_well_id="22_ЗБС",
+        field_name="Береговое",
+        normalized_field=normalize_field_name("Береговое"),
+        object_name="Береговой (ПК9-17)",
+        source_category=FundCategory.PRODUCING,
+        fund_date=date(2026, 8, 1),
+        source_row=2,
+        source_column="C",
+    )
+    delta = _status("22_ЗБС", "ПК15", "ИД", date(2024, 1, 1), 0.0, 10)
+    selected, issues = _status_candidates_for_target(
+        fund, "22_ЗБС", "ПК15", first, (delta,), (history,)
+    )
+    assert selected == (delta,)
     assert not issues

@@ -620,7 +620,7 @@ def test_zero_gdi_current_lifecycle_uses_launch_and_independent_sources(
     initial_history = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
     pvlg = replace(
         initial_history.stages[0],
-        target_well_id="22_ЗБС" if boundary is WellEventKind.ZBS else None,
+        target_well_id="22_ЗБС" if boundary is WellEventKind.ZBS else "22",
         plast="ПК2",
         event_kind=boundary,
         started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
@@ -771,11 +771,7 @@ def test_pvlg_and_pnlg_target_identity_uses_physical_root(
         field_name="Береговое",
         physical_root="54",
         source_display_well="054",
-        target_well_id=(
-            source_identity
-            if kind in {WellEventKind.PVLG, WellEventKind.PNLG} and source_identity != "54"
-            else None
-        ),
+        target_well_id="54",
         plast="ПК2",
         event_kind=kind,
         started_at=PartialDate(2023, 6, 1, DatePrecision.DAY),
@@ -827,6 +823,7 @@ def test_pvlg_without_gdi_uses_root_for_target_and_suffix_for_lookup() -> None:
         history.stages[0],
         physical_root="54",
         source_display_well="054",
+        target_well_id="54",
         plast="ПК2",
     )
     history = replace(history, physical_root="54", source_display_well="054", stages=(stage,))
@@ -869,7 +866,7 @@ def test_pvlg_and_pnlg_start_new_history_without_changing_well_number(
     initial = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
     event_stage = replace(
         initial.stages[0],
-        target_well_id=None,
+        target_well_id="22",
         plast="ПК2",
         event_kind=boundary,
         started_at=PartialDate(2023, 6, None, DatePrecision.MONTH),
@@ -1366,3 +1363,93 @@ def test_info_issue_is_logged_at_info_level(caplog) -> None:  # type: ignore[no-
     assert [(record.levelno, record.message) for record in caplog.records] == [
         (logging.INFO, "TEST_INFO: тестовая информация")
     ]
+
+
+@pytest.mark.parametrize("gdi_status", ["MATCHED", "NO_GDI", "AMBIGUOUS"])
+def test_independent_sources_use_lifecycle_not_gdi_status(monkeypatch, gdi_status: str) -> None:  # type: ignore[no-untyped-def]
+    from gdis_loader.domain.models import MatchResult, MatchStatus
+
+    well = _fund_identity("Береговое")
+    history = _history_stage(PartialDate(2020, 1, 1, DatePrecision.DAY))
+    record = _gdi_identity("Береговое")
+    status = MatchStatus(gdi_status)
+    monkeypatch.setattr(
+        service,
+        "match_all",
+        lambda *_args: (
+            (
+                MatchResult(
+                    status=status,
+                    fund_well=well,
+                    record=record if status is MatchStatus.MATCHED else None,
+                ),
+            ),
+            (),
+        ),
+    )
+    daily = DailyTelemetryRow(
+        raw_field_name="Береговое",
+        raw_well_name="22",
+        base_well_id="22",
+        target_well_id="22",
+        source_row=2,
+        daily_values=(1.0, 3.0),
+        source_file="daily.xlsm",
+        source_sheet="daily",
+        well_cell="A2",
+        daily_cells=("B2", "C2"),
+    )
+    delta = ResearchStatusRecord(
+        raw_well_name="22",
+        base_well_id="22",
+        target_well_id="22",
+        raw_plast="ПК1",
+        normalized_plast="ПК1",
+        research_type="ИД",
+        study_date=PartialDate(2026, 7, 1, DatePrecision.DAY),
+        delta_raw=0,
+        delta_value=0.0,
+        delta_formula_without_cache=False,
+        source_row=2,
+        source_file="status.xlsx",
+        source_sheet="АР_таблица_БЛУ",
+        well_cell="A2",
+        plast_cell="B2",
+        research_type_cell="C2",
+        date_cell="D2",
+        delta_cell="J2",
+    )
+    report = LoadReport("now", "0.1", "3.14", {}, target_field="Береговое")
+    lha = LhaRecord(
+        raw_field_name="Береговое",
+        normalized_field=normalize_field_name("Береговое"),
+        raw_well_name="22",
+        base_well_id="22",
+        target_well_id="22",
+        raw_plast="ПК1",
+        normalized_plast="ПК1",
+        measured_at=datetime(2026, 6, 1),
+        cl_value=1234.0,
+        vgf_value=45.0,
+        source_row=2,
+        source_file="lha.xlsm",
+        source_sheet="lha",
+        date_cell="D2",
+        cl_cell="E2",
+        vgf_cell="F2",
+    )
+    rows = _build_target_rows(
+        FundParseResult((well,), date(2026, 8, 1), "fund"),
+        GdiIndex((record,)),
+        LhaIndex((lha,)),
+        report,
+        (history,),
+        date(2026, 10, 3),
+        (delta,),
+        daily_rows=(daily,),
+    )
+    assert rows[0].debit == 2.0
+    assert rows[0].gdm_problems == "Нет"
+
+    assert rows[0].cl_current == 1234.0
+    assert rows[0].vgf_current == 45.0

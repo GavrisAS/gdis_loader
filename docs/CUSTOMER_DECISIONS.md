@@ -45,7 +45,8 @@
 и прочие ГТМ сами по себе границей не являются.
 
 - `ПВЛГ`/`ПНЛГ` начинают новую lifecycle history, но target display/canonical
-  well number всегда равен `physical_root` без source suffix `_ПВЛГ`/`_ПНЛГ`;
+  well number наследуется от родительского stage (включая ordinal ЗБС),
+  без source suffix `_ПВЛГ`/`_ПНЛГ`;
   меняются этап, дата запуска, актуальный пласт и соответствующая история ГДИ/ЛХА/ГДМ.
 - Для последовательных текущих ЗБС использовать детерминированный ordinal
   (`_ЗБС`, `_ЗБС2`, `_ЗБС3`) по fund и истории. Не нумеровать произвольно
@@ -70,6 +71,20 @@ lifecycle нет. Удельное количество ГДИ остаётся 
 качественные GDI-признаки без доказательств также blank. LHA, GDM и Debit можно
 заполнять при отдельном однозначном assignment по их подтверждённым ключам и
 временной истории; отсутствие ГДИ их не блокирует.
+
+## Объект фонда и exact plast
+
+В поле `Объект` фонда parenthesized `ПК9-17` и `ПК19-20` задают диапазон
+primary plasts, а не совместный exact plast. Composite current plast совместим,
+если все его primary constituents входят в диапазон. Exact sources ГДИ/history/
+ЛХА/ГДМ сохраняют прежнюю canonicalization: `ПК19-20 -> ПК19+20`.
+
+Current lifecycle resolution отделен от GDI match status. GDM, Debit и ЛХА
+используют собственный assignment при разрешенной lifecycle identity даже при
+GDI `AMBIGUOUS`; genuine unresolved lifecycle блокирует зависимые поля.
+Explicit active ordinal ЗБС выбирается до общей latest-stage логики; PVLG/PNLG
+внутри ветки сохраняют ее identity. Root-only row с несколькими явно работающими
+совместимыми ordinal ветками остается неоднозначной.
 
 ## Пласты
 

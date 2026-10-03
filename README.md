@@ -205,6 +205,18 @@ make check
 make audit
 ```
 
+Для audit конкретного update используйте runtime report: он содержит manifest
+фактически выбранных SourcePaths и immutable criteria snapshot:
+
+```bash
+GDIS_AUDIT_RUNTIME_REPORT="reports/result.load-report.json" make audit
+```
+
+В bundle копируется только privacy-safe manifest, а не сам runtime report.
+Без этой переменной manifest берет выбранные inputs/criteria из пользовательского
+config; не подставляет canonical filenames вместо отсутствующих selections.
+Frozen manifest берет commit/version из встроенного build module и не требует git.
+
 `make audit` создаёт `audit/gdis_loader_audit_*.tar.xz`, включая незакоммиченные
 исходники и git metadata. Реальные файлы `data/`, локальный `config.toml`,
 генерированные книги, логи, caches, build и dist намеренно исключаются.

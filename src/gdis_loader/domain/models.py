@@ -206,6 +206,7 @@ class FundWell:
     source_column: str
     target_well_id: str | None = None
     object_plast_hint: str | None = None
+    active_zbs_identities: tuple[str, ...] = ()
     source_file: str = ""
     source_sheet: str | None = None
     field_cell: str | None = None
@@ -276,6 +277,8 @@ class WellStage:
     stage_sequence: int
     source_location: SourceLocation
     raw_block: tuple[CellValue, ...]
+    parent_stage_id: int | None = None
+    ordinal: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -601,6 +604,7 @@ class LoadReport:
     input_paths: dict[str, str | None]
     fund_date: date | None = None
     calculation_date: date | None = None
+    source_manifest: dict[str, Any] = field(default_factory=dict)
     criteria_snapshot: dict[str, Any] = field(default_factory=dict)
     config_source: str | None = None
     fund_total: int = 0

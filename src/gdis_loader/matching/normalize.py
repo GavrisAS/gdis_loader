@@ -174,10 +174,6 @@ def _primary_pc_numbers(text: str) -> list[int]:
 def extract_exact_plast_hint(object_name: str) -> str | None:
     """Extract only a clearly named ПК object from a fund group label."""
 
-    match = re.search(r"\((?P<plast>[^()]*)\)", object_name)
-    if match is None:
-        return None
-    candidate = normalize_plast(match.group("plast"))
-    if candidate is None or not re.fullmatch(r"ПК\d+(?:\+\d+)*", candidate):
-        return None
-    return candidate
+    from gdis_loader.matching.fund_scope import parse_fund_object_scope
+
+    return parse_fund_object_scope(object_name).exact_plast

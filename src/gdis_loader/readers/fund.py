@@ -17,6 +17,7 @@ from gdis_loader.domain.models import (
     FundWell,
     IssueSeverity,
 )
+from gdis_loader.matching.lifecycle import attach_active_fund_branches
 from gdis_loader.matching.normalize import (
     extract_exact_plast_hint,
     normalize_field_name,
@@ -378,6 +379,8 @@ def read_fund(path: Path) -> FundParseResult:
                         ),
                     )
                 )
-        return FundParseResult(tuple(wells), fund_date, worksheet.title, tuple(issues))
+        return FundParseResult(
+            attach_active_fund_branches(tuple(wells)), fund_date, worksheet.title, tuple(issues)
+        )
     finally:
         workbook.close()

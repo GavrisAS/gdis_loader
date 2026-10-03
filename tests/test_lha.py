@@ -463,3 +463,51 @@ def test_lha_three_values_at_one_timestamp_choose_max() -> None:
     assert result.cl_current == 3
     assert result.cl_previous is None
     assert "максимальное валидное значение" in result.issues[0].message
+
+
+def test_inherited_zbs_identity_does_not_reuse_pre_pvlg_lha() -> None:
+    from datetime import date
+
+    initial = WellStage(
+        field_name="Береговое",
+        physical_root="11",
+        source_display_well="011",
+        target_well_id="11_ЗБС",
+        plast="ПК1",
+        event_kind=WellEventKind.ZBS,
+        started_at=PartialDate(2021, 1, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("history.xlsx", "history", "A2"),
+        raw_block=(),
+    )
+    pvlg = replace(
+        initial,
+        event_kind=WellEventKind.PVLG,
+        started_at=PartialDate(2023, 1, 1, DatePrecision.DAY),
+        stage_sequence=2,
+        parent_stage_id=1,
+    )
+    sibling = replace(
+        initial,
+        target_well_id="11_ЗБС2",
+        plast="ПК2",
+        started_at=PartialDate(2022, 1, 1, DatePrecision.DAY),
+        stage_sequence=3,
+    )
+    history = WellHistory("Береговое", "11", "011", (), (initial, pvlg, sibling))
+    old = replace(
+        _record(datetime(2022, 6, 1), cl=999), raw_well_name="11_ЗБС", target_well_id="11_ЗБС"
+    )
+    current = replace(old, measured_at=datetime(2024, 6, 1), cl_value=10.0, source_row=3)
+    selected = LhaIndex((old, current)).select(
+        base_well_id="11",
+        physical_root="11",
+        target_well_id="11_ЗБС",
+        normalized_field=normalize_field_name("Береговое"),
+        normalized_plast="ПК1",
+        histories=(history,),
+        lifecycle_stage=pvlg,
+        cutoff=datetime.combine(date(2026, 1, 1), datetime.min.time()),
+    )
+    assert selected.cl_current == 10.0
+    assert selected.cl_previous is None
