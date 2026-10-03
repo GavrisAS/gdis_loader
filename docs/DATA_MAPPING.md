@@ -65,3 +65,12 @@ scope; suffix не выбирает ЗБС1. До первой ЗБС либо �
 Debit/GDM/LHA semantics сохраняются.
 
 Сверка production и aggregate inventory: [REAL_DATA_DELTA_v0.17.md](REAL_DATA_DELTA_v0.17.md).
+
+## Underscore exact-plast syntax (v0.19)
+
+`ПК_1 → ПК1`; `ПК20_2`, `ПК20_0_1 → ПК20`;
+`ПК19_1+2`, `ПК19_2+1? → ПК19`. Underscore после primary обозначает
+sublayer detail. Замена `_` для произвольных строк не выполняется.
+`ПК19-20`, `ПК19-2+20`, `ПК19/2+ПК20`, `ПК19-ПК20 → ПК19+20`;
+`ПК14+15` остается составным. Exact single primary не равен joint plast.
+`Береговой (ПК9-17)` по-прежнему fund range, не exact composite.

@@ -231,6 +231,35 @@ def revalidate_sources(
     return result
 
 
+def revalidate_generated_calculator(
+    manifest: dict[str, Any], output_path: str | None, *, strict: bool = True
+) -> dict[str, Any]:
+    """Verify saved output evidence against runtime bytes without exporting paths."""
+    result = deepcopy(manifest)
+    result["manifest_version"] = 4
+    entries = [
+        entry for entry in result.get("sources", []) if entry["role"] == "generated_calculator"
+    ]
+    path = Path(output_path) if output_path else None
+    if len(entries) != 1 or path is None or not path.is_file():
+        result["generated_calculator_revalidation_status"] = "not_revalidated"
+        for entry in entries:
+            entry["revalidation_status"] = "unavailable"
+        if strict:
+            raise AuditProvenanceError("Generated calculator revalidation unavailable.")
+        return result
+    entry = entries[0]
+    if (
+        PureWindowsPath(path.name).name != entry.get("name")
+        or path.stat().st_size != entry.get("size_bytes")
+        or _sha256(path) != entry.get("sha256")
+    ):
+        raise AuditProvenanceError("Generated calculator hash revalidation mismatch.")
+    entry["revalidation_status"] = "matched"
+    result["generated_calculator_revalidation_status"] = "revalidated"
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -273,6 +302,9 @@ def main() -> int:
     else:
         manifest = revalidate_sources(
             manifest, runtime.get("input_paths", {}), strict=not args.non_strict
+        )
+        manifest = revalidate_generated_calculator(
+            manifest, runtime.get("output_path"), strict=not args.non_strict
         )
         manifest["runtime_evidence_status"] = "runtime_report"
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -333,3 +333,97 @@ def test_real_lha_duplicate_timestamps_choose_max_independent_of_source_row_orde
             assert all(
                 issue.severity is IssueSeverity.INFO and issue.locations for issue in resolved
             )
+
+
+@pytest.mark.skipif(
+    not all(path.is_file() for path in REAL_FILES), reason="real data files are not present"
+)
+@pytest.mark.parametrize("field", ["Береговое", "Пырейное", "Хадырьяхинское"])
+def test_real_all_fields_update_and_ooxml(tmp_path: Path, field: str) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "real_reconcile", DATA_ROOT.parent / "scripts/reconcile_gdi.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    reconcile = module.reconcile
+
+    output = tmp_path / f"{field}.xlsx"
+    paths = SourcePaths(
+        calculator=REAL_FILES[0],
+        fund=REAL_FILES[1],
+        gdi=REAL_FILES[2],
+        lha=REAL_FILES[3],
+        daily_report=REAL_FILES[4],
+        well_history=REAL_FILES[5],
+        research_status=REAL_FILES[6],
+        output=output,
+    )
+    result = run_update(
+        paths,
+        tmp_path / f"{field}.log",
+        target_field=field,
+        calculation_date=date(2026, 10, 3),
+    )
+    report = result.report
+    assert field in report.available_fields
+    assert report.rows_written == report.rating_eligible > 0
+    assert report.rows_written == report.matched + report.no_gdi + report.ambiguous
+    reconciliation = reconcile(paths, field, output, date(2026, 10, 3))
+    assert reconciliation["metrics"].get("application_count_mismatches", 0) == 0
+    assert not result.has_errors
+    with ZipFile(paths.calculator) as original, ZipFile(output) as generated:
+        assert set(original.namelist()) == set(generated.namelist())
+        changed = {
+            name for name in original.namelist() if original.read(name) != generated.read(name)
+        }
+        assert changed == {"xl/worksheets/sheet3.xml", "xl/tables/table2.xml"}
+        sheet_xml = generated.read("xl/worksheets/sheet3.xml").decode()
+        table_xml = generated.read("xl/tables/table2.xml").decode()
+    end = 6 + report.rows_written
+    assert f'ref="A6:Z{end}"' in table_xml
+    assert f'sqref="A7:A{end}"' in sheet_xml
+    assert 'mc:Ignorable="x14ac"' in sheet_xml
+    assert "xmlns:x14ac=" in sheet_xml
+    root = ElementTree.fromstring(sheet_xml)
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    sheet_data = root.find(namespace + "sheetData")
+    assert sheet_data is not None
+    assert max(int(row.attrib["r"]) for row in sheet_data) == end
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        sheet = workbook["Данные"]
+        headers = [cell.value for cell in next(sheet.iter_rows(min_row=6, max_row=6))]
+        rows = {
+            str(row[headers.index("Скважина")]): dict(zip(headers, row, strict=True))
+            for row in sheet.iter_rows(min_row=7, max_row=end, values_only=True)
+        }
+        assert len(rows) == report.rows_written
+        assert (
+            sum(row["Количество ГДИ"] or 0 for row in rows.values())
+            == reconciliation["metrics"]["deduplicated_valid_rows_after_launch"]
+        )
+        # Exact customer counts are pinned only to the unchanged production bundle.
+        import re
+
+        baseline = (DATA_ROOT.parent / "docs/REAL_DATA_DELTA_v0.18.md").read_text()
+        expected_hashes = re.findall(r"`([a-f0-9]{64})`", baseline)
+        actual_hashes = [
+            entry["sha256"]
+            for entry in report.source_manifest["sources"]
+            if entry["role"] != "generated_calculator"
+        ]
+        if set(expected_hashes) == set(actual_hashes) and field == "Пырейное":
+            assert report.rows_written == report.matched == 5
+            assert report.ambiguous == report.no_gdi == 0
+            assert rows["22"]["Количество ГДИ"] == 11
+            assert rows["62"]["Количество ГДИ"] == 4
+            assert rows["22"]["Пласт"] == rows["62"]["Пласт"] == "ПК1"
+        if set(expected_hashes) == set(actual_hashes) and field == "Береговое":
+            assert report.rows_written == 78
+            for well, count in {"12": 20, "13": 21, "21": 19, "22": 19}.items():
+                assert rows[well]["Количество ГДИ"] == count
+    finally:
+        workbook.close()

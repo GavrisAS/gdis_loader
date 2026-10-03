@@ -112,3 +112,14 @@ scope; suffix не выбирает ЗБС1. До первой ЗБС либо �
 Debit/GDM/LHA semantics сохраняются.
 
 Сверка production и aggregate inventory: [REAL_DATA_DELTA_v0.17.md](REAL_DATA_DELTA_v0.17.md).
+
+## Shared plast grammar и audit output (v0.19)
+
+`matching.normalize.parse_pc_plast` распознает `_` только в ПК tokens.
+До первого номера это separator семейства (`ПК_1`); после primary —
+subordinate detail (`ПК20_0_1`). Bare single-digit `+` после detail продолжает
+sublayer; explicit ПК token либо multi-digit `+` начинает primary.
+Fund object range parser остается отдельным semantic layer.
+History, GDI, LHA и research-status/GDM используют один `normalize_plast`.
+Audit использует runtime `output_path` только для повторного чтения bytes;
+manifest version 4 экспортирует hash/size/basename и revalidation status.

@@ -170,3 +170,38 @@ def test_plast_shorthand_never_conflates_joint_primary() -> None:
 def test_explicit_primary_token_after_hyphen_is_joint_plast() -> None:
     assert normalize_plast("ПК19-ПК20") == "ПК19+20"
     assert normalize_plast("ПК₁₉²,ПК₂₀") == "ПК19+20"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("ПК_1", "ПК1"),
+        ("ПК20_2", "ПК20"),
+        ("ПК20_0_1", "ПК20"),
+        ("ПК19_1+2", "ПК19"),
+        ("ПК19_2+1?", "ПК19"),
+        ("ПК19-1+2", "ПК19"),
+        ("ПК-19-1+2", "ПК19"),
+        ("ПК17-2-1", "ПК17"),
+        ("ПК14-1", "ПК14"),
+        ("ПК19-20", "ПК19+20"),
+        ("ПК19-2+20", "ПК19+20"),
+        ("ПК14+15", "ПК14+15"),
+        ("ПК19/2+ПК20", "ПК19+20"),
+        ("ПК19-ПК20", "ПК19+20"),
+        ("ПК _ 1", "ПК1"),
+        ("OTHER_1", "OTHER_1"),
+        ("OTHER _ 1", "OTHER _ 1"),
+        ("АТ_1", "АТ_1"),
+        ("10302_ЗБС", "10302_ЗБС"),
+        ("10201_ЗБС_МГРП", "10201_ЗБС_МГРП"),
+    ],
+)
+def test_underscore_pc_grammar_and_preserved_separators(raw: str, expected: str) -> None:
+    assert normalize_plast(raw) == expected
+
+
+def test_underscore_does_not_conflate_primary_combinations_or_well_identity() -> None:
+    assert normalize_plast("ПК19_1+2") != normalize_plast("ПК19+20")
+    assert normalize_plast("ПК14") != normalize_plast("ПК14+15")
+    assert normalize_well_id("10201_ЗБС_МГРП").target_well_id == "10201_ЗБС_МГРП"

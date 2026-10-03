@@ -368,3 +368,40 @@ def test_audit_rehashes_runtime_sources(tmp_path: Path, mutation: str) -> None:
             result = revalidate_sources(manifest, {"fund": str(path)}, strict=False)
             assert result["sources"][0]["revalidation_status"] == "unavailable"
             assert result["source_revalidation_status"] == "not_revalidated"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["unchanged", "modified", "same_name", "missing_path", "missing_file", "missing_entry"],
+)
+def test_audit_rehashes_generated_calculator(tmp_path: Path, mutation: str) -> None:
+    from gdis_loader.source_manifest import AuditProvenanceError, revalidate_generated_calculator
+
+    path = tmp_path / "private" / "output.xlsx"
+    path.parent.mkdir()
+    path.write_bytes(b"original")
+    manifest = build_source_manifest(tmp_path, generated_calculator=path)
+    reference = str(path)
+    if mutation == "modified":
+        path.write_bytes(b"changed!")
+    elif mutation == "same_name":
+        neighbor = tmp_path / path.name
+        neighbor.write_bytes(b"changed!")
+        reference = str(neighbor)
+    elif mutation == "missing_path":
+        reference = None
+    elif mutation == "missing_file":
+        path.unlink()
+    elif mutation == "missing_entry":
+        manifest["sources"] = []
+    if mutation == "unchanged":
+        result = revalidate_generated_calculator(manifest, reference)
+        assert result["manifest_version"] == 4
+        assert result["generated_calculator_revalidation_status"] == "revalidated"
+        assert result["sources"][-1]["revalidation_status"] == "matched"
+        assert str(tmp_path) not in json.dumps(result)
+        assert "private" not in json.dumps(result)
+        assert "revalidation_status" not in manifest["sources"][-1]
+    else:
+        with pytest.raises(AuditProvenanceError):
+            revalidate_generated_calculator(manifest, reference)

@@ -54,3 +54,12 @@ source cell: это может включить well в sigmoid, а multiplier z
 `Расчет!J`, capacity ranges `Расчет`/`Рейтинг` и любые связанные formula refs.
 Физические столбцы `Расходомер`, АДД и `Техническая возможность` пока также
 сохраняются и остаются blank по текущему scope.
+
+## Current corrective baseline v0.19
+
+Перед structural migration исправлена underscore ПК grammar и добавлена
+strict generated-calculator hash revalidation. Полные production updates
+проверяются для Берегового, Пырейного и Хадырьяхинского. Эта итерация меняет
+только target data; `Расчет`, `Рейтинг`, `Настройки`, μ/λ formulas, weights и
+calculation settings сохраняются byte-identical. Описанная выше migration
+остается deferred и должна выполняться отдельным этапом после принятия v0.19.

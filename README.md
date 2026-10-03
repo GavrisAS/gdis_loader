@@ -248,3 +248,15 @@ variants. Bare ЗБС в конце строки задает ordinal 1; анн�
 GS/MZS не сливаются с root; PVLG/PNLG сохраняют parent identity.
 Production delta: [REAL_DATA_DELTA_v0.17](docs/REAL_DATA_DELTA_v0.17.md).
 Audit provenance: [AUDIT_PROVENANCE](docs/AUDIT_PROVENANCE.md).
+
+## Corrective pass v0.19
+
+Общий exact-plast parser поддерживает underscore: `ПК_1 → ПК1`,
+`ПК20_2 → ПК20`, `ПК20_0_1 → ПК20`, `ПК19_1+2 → ПК19`.
+Underscore обрабатывается внутри ПК grammar, well-id suffix не меняется.
+Dash composite `ПК19-20 → ПК19+20` и fund group `ПК9-17` сохраняют
+раздельную семантику. Real integration выполняет validate/discovery и полный
+update всех трех месторождений при наличии локального production bundle.
+Strict runtime audit повторно проверяет все 7 sources и generated calculator.
+Сверка: [REAL_DATA_DELTA_v0.19](docs/REAL_DATA_DELTA_v0.19.md).
+Structural μ/λ migration остается отдельным следующим этапом.

@@ -105,3 +105,13 @@ scope; suffix не выбирает ЗБС1. До первой ЗБС либо �
 Debit/GDM/LHA semantics сохраняются.
 
 Сверка production и aggregate inventory: [REAL_DATA_DELTA_v0.17.md](REAL_DATA_DELTA_v0.17.md).
+
+## Production underscore inventory (v0.19)
+
+All seven source roles/all worksheets were scanned: history has 13 `ПК_1`
+cells; LHA has 60 `ПК20_2` cells; research status has 2 `ПК20_0_1` cells.
+Other roles have no underscore ПК cells. Shared normalization maps these to
+ПК1/ПК20/ПК20. Пырейное eligible 22/62 now resolve INITIAL, counts 11/4.
+Хадырьяхинское has 10 eligible rows and no output delta; raw historical forms
+remain meaningful test coverage. Full scope/coverage and field aggregates:
+[REAL_DATA_DELTA_v0.19.md](REAL_DATA_DELTA_v0.19.md).

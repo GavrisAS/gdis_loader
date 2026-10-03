@@ -13,7 +13,7 @@ from openpyxl import load_workbook
 
 from gdis_loader.matching.normalize import normalize_field_name, normalize_plast, normalize_well_id
 from gdis_loader.readers.fund import read_fund
-from gdis_loader.readers.well_history import FIELD_SHEETS
+from gdis_loader.readers.well_history import FIELD_SHEETS, find_well_history_schema
 
 _SHORTHAND = re.compile(r"^ПК\s*-?\s*\d{2,}(?:-\d+)*-\d\+\d\??$", re.IGNORECASE)
 
@@ -37,7 +37,10 @@ def inventory(manifest: dict[str, Any], source_dir: Path) -> list[dict[str, Any]
         workbook = load_workbook(source_dir / entry["name"], read_only=True, data_only=True)
         try:
             for sheet in workbook:
-                well_column = None
+                schema = (
+                    find_well_history_schema(sheet) if entry["role"] == "well_history" else None
+                )
+                well_column = schema.well_column if schema is not None else None
                 field_column = None
                 sheet_field = normalize_field_name(
                     FIELD_SHEETS.get(sheet.title.removeprefix("АР_таблица_"), "")
@@ -84,15 +87,95 @@ def inventory(manifest: dict[str, Any], source_dir: Path) -> list[dict[str, Any]
     return result
 
 
+def underscore_inventory(manifest: dict[str, Any], source_dir: Path) -> list[dict[str, Any]]:
+    """Aggregate underscore ПК cells and eligible candidate coverage by field.
+
+    Coverage is lineage candidate coverage, not proof of a changed output.
+    Every worksheet is scanned, including historical/non-eligible rows.
+    """
+    fund_entry = next(entry for entry in manifest["sources"] if entry["role"] == "fund")
+    targets = tuple(
+        well for well in read_fund(source_dir / fund_entry["name"]).wells if well.is_rating_eligible
+    )
+    counts: Counter[str] = Counter()
+    roles: dict[str, set[str]] = {}
+    candidates: dict[str, set[tuple[str, str]]] = {}
+    for entry in manifest["sources"]:
+        if entry["role"] == "generated_calculator":
+            continue
+        workbook = load_workbook(source_dir / entry["name"], read_only=True, data_only=True)
+        try:
+            for sheet in workbook:
+                schema = (
+                    find_well_history_schema(sheet) if entry["role"] == "well_history" else None
+                )
+                well_column = schema.well_column if schema is not None else None
+                field_column = None
+                sheet_field = normalize_field_name(
+                    FIELD_SHEETS.get(sheet.title.removeprefix("АР_таблица_"), "")
+                )
+                for row in sheet.iter_rows(values_only=True):
+                    for index, value in enumerate(row):
+                        if value in ("Скважина", "Номер скважины", "№ скв."):
+                            well_column = index
+                        if value == "Месторождение":
+                            field_column = index
+                    for value in row:
+                        if not isinstance(value, str):
+                            continue
+                        raw = value.strip()
+                        if not re.fullmatch(
+                            r"ПК[\d _+/,()?\-]*_[\d _+/,()?\-]*", raw, re.IGNORECASE
+                        ):
+                            continue
+                        counts[raw] += 1
+                        roles.setdefault(raw, set()).add(entry["role"])
+                        field = (
+                            normalize_field_name(row[field_column])
+                            if field_column is not None
+                            else sheet_field
+                        )
+                        if well_column is not None:
+                            root = normalize_well_id(row[well_column]).base_well_id
+                            if root:
+                                candidates.setdefault(raw, set()).add((field, root))
+        finally:
+            workbook.close()
+    return [
+        {
+            "raw": raw,
+            "count": count,
+            "canonical_before": raw.upper(),
+            "canonical_after": normalize_plast(raw),
+            "source_roles": sorted(roles[raw]),
+            "affected_eligible_target_count": {
+                field: sum(
+                    (well.normalized_field, well.base_well_id) in candidates.get(raw, set())
+                    for well in targets
+                    if well.normalized_field == field
+                )
+                for field in sorted({well.normalized_field for well in targets})
+            },
+        }
+        for raw, count in sorted(counts.items())
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-report", type=Path, required=True)
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--underscore", action="store_true")
     args = parser.parse_args()
     manifest = json.loads(args.runtime_report.read_text(encoding="utf-8"))["source_manifest"]
     args.output.write_text(
-        json.dumps(inventory(manifest, args.source_dir), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            (underscore_inventory if args.underscore else inventory)(manifest, args.source_dir),
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
 

@@ -1,4 +1,4 @@
-# Runtime and audit provenance (v0.18)
+# Runtime and audit provenance (v0.19)
 
 Runtime manifest version 3 stores `run_timestamp_utc`, `runtime_git_commit`,
 `runtime_release_tag`, `python_version`, `calculation_date`, `selected_field`.
@@ -30,7 +30,7 @@ Aggregate reconciliation and inventory are in REAL_DATA_DELTA_v0.18.md.
 For release audit, re-run production after commit and tag fetch, then:
 
 ```bash
-GDIS_AUDIT_RUNTIME_REPORT=reports/v018/gdis_after.load-report.json make audit
+GDIS_AUDIT_RUNTIME_REPORT=reports/v019/gdis_after.load-report.json make audit
 ```
 
 Never edit runtime commit/tag to match HEAD. A changed revision requires a new run.
@@ -49,3 +49,16 @@ manifest is archived, with per-source `revalidation_status=matched` and aggregat
 The CLI-only `--non-strict` developer option permits unavailable files with
 `unavailable` / `not_revalidated`; byte mismatches still fail. Commit/tag guards
 run before revalidation. Generated calculator bytes remain excluded.
+
+## Generated calculator revalidation (v0.19)
+
+Strict runtime audit additionally reopens runtime `output_path`, checks the
+saved generated-calculator basename, size and SHA-256. Missing entry/path/file,
+changed bytes, or a different file with the same basename fails. Hash evidence
+is never replaced. Paths stay internal. Version **4** explicitly identifies the
+new audit schema; runtime v3 and legacy v2 are accepted with existing provenance
+guards. Per-output `revalidation_status=matched` and aggregate
+`generated_calculator_revalidation_status=revalidated` prove the check.
+Developer non-strict mode labels unavailable output `not_revalidated`.
+For three fields, create one strict archive per runtime report; each archive
+also contains the aggregate comparison in REAL_DATA_DELTA_v0.19.md.

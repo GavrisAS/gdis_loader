@@ -37,3 +37,10 @@ quality issues источника, а не основание выбирать �
 даты следует считать новую историю. До ответа INITIAL остается подтвержденным
 этапом, current count=0 / NO_GDI; loader сообщает
 `GDI_UNCONFIRMED_LIFECYCLE_RECORDS` и не создает событие из исследований.
+
+## v0.19 corrective state
+
+Underscore plast mismatch Пырейного — parser defect, устранен общей grammar;
+нового business decision не требует. 10306 остается нерешенным source-quality
+вопросом выше. Конфликты 10304/10404/10503 не разрешаются автоматически.
+Multi-field current state: [REAL_DATA_DELTA_v0.19.md](REAL_DATA_DELTA_v0.19.md).

@@ -153,6 +153,7 @@ def normalize_plast(value: object) -> str | None:
     text = _PLAST_PREFIX_RE.sub(r"\g<prefix>", text)
     text = _PLAST_SPACE_RE.sub(r"\g<prefix>", text)
     if text.startswith("ПК"):
+        text = re.sub(r"\s*_\s*", "_", text)
         primary = _primary_pc_numbers(text)
         if primary:
             ordered = sorted(set(primary))
@@ -181,8 +182,10 @@ def parse_pc_plast(text: str) -> ParsedPlast | None:
 
     A bare one-digit plus token continues an active sublayer suffix; an
     explicit ПК token or a multi-digit number starts a primary component.
+    Underscore before the first number separates the family; after a primary
+    number it introduces subordinate detail, never a joint primary plast.
     """
-    tokens = re.findall(r"ПК|\d+|[+,/()\-?]", text)
+    tokens = re.findall(r"ПК|\d+|[+,/()_\-?]", text)
     if "".join(tokens) != text or not tokens or tokens[0] != "ПК":
         return None
     components: list[PlastComponent] = []
@@ -208,9 +211,11 @@ def parse_pc_plast(text: str) -> ParsedPlast | None:
             else:
                 return None
             expect_primary = False
-        elif token in {"-", "/", "("}:
+        elif token in {"-", "_", "/", "("}:
             following = tokens[index + 1] if index + 1 < len(tokens) else ""
-            expect_primary = token == "-" and following.isdigit() and len(following) >= 2
+            expect_primary = (token == "_" and not components) or (
+                token == "-" and following.isdigit() and len(following) >= 2
+            )
             sublayer_context = not expect_primary
         elif token in {"+", ","}:
             following = tokens[index + 1] if index + 1 < len(tokens) else ""
