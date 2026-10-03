@@ -19,5 +19,6 @@ Native Excel and real Excel golden evaluation: PENDING, not substituted by tests
 
 Corrective positive/negative editability tests: 20 passed. Actual cellXfs
 protection and sheetProtection verified; retired cells locked and rows hidden;
-clones preserve visual attributes. Deterministic rebuild equals tracked binary.
+clones preserve visual attributes. Repeated local builds are byte-deterministic. Cross-platform rebuild equals
+tracked OOXML payloads; ZIP compression bytes may differ between zlib builds.
 Protection fix adds no formula changes.

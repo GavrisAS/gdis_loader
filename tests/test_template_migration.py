@@ -249,8 +249,12 @@ def test_real_migration_deterministic_and_exact_diff(tmp_path: Path) -> None:
         assert backup.read_bytes() == SOURCE.read_bytes()
     assert set(migrate(SOURCE, first)) == EXPECTED_CHANGED
     migrate(SOURCE, second)
-    assert first.read_bytes() == second.read_bytes()
-    assert first.read_bytes() == CANDIDATE.read_bytes()
+    assert sha256(first) == sha256(second)
+    # zlib output may differ across Linux/Windows; compare exact OOXML payloads.
+    with ZipFile(first) as rebuilt, ZipFile(CANDIDATE) as published:
+        assert rebuilt.namelist() == published.namelist()
+        for name in rebuilt.namelist():
+            assert rebuilt.read(name) == published.read(name), name
     assert sha256(SOURCE) == SOURCE_SHA256
     with pytest.raises(ValueError, match="separate"):
         migrate(SOURCE, first)
