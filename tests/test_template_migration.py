@@ -19,6 +19,7 @@ from gdis_loader.domain.models import TargetRow
 from gdis_loader.excel.template_migration import (
     CAPACITY,
     EXPECTED_CHANGED,
+    GENERAL_EDITABLE,
     SOURCE_SHA256,
     _arguments,
     _mu,
@@ -249,6 +250,7 @@ def test_real_migration_deterministic_and_exact_diff(tmp_path: Path) -> None:
     assert set(migrate(SOURCE, first)) == EXPECTED_CHANGED
     migrate(SOURCE, second)
     assert first.read_bytes() == second.read_bytes()
+    assert first.read_bytes() == CANDIDATE.read_bytes()
     assert sha256(SOURCE) == SOURCE_SHA256
     with pytest.raises(ValueError, match="separate"):
         migrate(SOURCE, first)
@@ -272,8 +274,12 @@ def test_real_migration_deterministic_and_exact_diff(tmp_path: Path) -> None:
                         new_styles.get(cell) == style
                         or (
                             name == "xl/worksheets/sheet2.xml"
-                            and (cell == "B12" or cell.startswith("L"))
-                            and new_styles.get(cell) == "0"
+                            and (
+                                cell in GENERAL_EDITABLE
+                                or re.search(r"(?:28|34)$", cell)
+                                or cell == "B12"
+                                or cell.startswith("L")
+                            )
                         )
                         for cell, style in old_styles.items()
                     )
@@ -407,3 +413,50 @@ def test_workbook_mu_and_mask_golden(
     values["B20"] = mu
     mask = _evaluate(str(root.findtext(".//c[@r='CQ20']/f")), values)
     assert mask == expected_mask
+
+
+@pytest.mark.parametrize("cell", [*sorted(GENERAL_EDITABLE), "D21", "G21", "H21", "I21", "J21"])
+def test_settings_editable_ooxml(cell: str) -> None:
+    _assert_settings_protection(cell, locked=False)
+
+
+@pytest.mark.parametrize("cell", ["B12", "L21", "L50", "D28", "G28", "D34", "G34"])
+def test_settings_fixed_ooxml(cell: str) -> None:
+    _assert_settings_protection(cell, locked=True)
+
+
+def _assert_settings_protection(cell: str, *, locked: bool) -> None:
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(CANDIDATE) as archive:
+        sheet = ET.fromstring(archive.read("xl/worksheets/sheet2.xml"))
+        sheet_protection = sheet.find("m:sheetProtection", ns)
+        assert sheet_protection is not None
+        assert sheet_protection.get("sheet") == "1"
+        node = sheet.find(f".//m:c[@r='{cell}']", ns)
+        styles = ET.fromstring(archive.read("xl/styles.xml")).find("m:cellXfs", ns)
+        assert styles is not None and node is not None
+        style = styles[int(node.get("s", "0"))]
+        protection = style.find("m:protection", ns)
+        actual = protection is None or protection.get("locked", "1") == "1"
+        assert actual is locked
+        for row in (28, 34):
+            retired = sheet.find(f"m:sheetData/m:row[@r='{row}']", ns)
+            assert retired is not None
+            assert retired.get("hidden") == "1"
+            for item in retired:
+                p = styles[int(item.get("s", "0"))].find("m:protection", ns)
+                assert p is None or p.get("locked", "1") == "1"
+        # Explicit clones preserve every visual style attribute/child.
+        with ZipFile(SOURCE) as before:
+            old_sheet = ET.fromstring(before.read("xl/worksheets/sheet2.xml"))
+            old_styles = ET.fromstring(before.read("xl/styles.xml")).find("m:cellXfs", ns)
+            old_cell = old_sheet.find(f".//m:c[@r='{cell}']", ns)
+            if cell in GENERAL_EDITABLE or cell in {"D28", "G28", "D34", "G34"}:
+                assert old_styles is not None and old_cell is not None
+                old = old_styles[int(old_cell.get("s", "0"))]
+                for item in (old, style):
+                    item.attrib.pop("applyProtection", None)
+                    p = item.find("m:protection", ns)
+                    if p is not None:
+                        item.remove(p)
+                assert ET.tostring(old) == ET.tostring(style)

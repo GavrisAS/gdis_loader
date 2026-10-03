@@ -136,8 +136,13 @@ jobs:
           tagged_sha=$(git ls-remote --refs origin "refs/tags/$TAG" | awk '{print $1}')
           [[ "$tagged_sha" == "$TARGET_SHA" ]]
           gh release create "$TAG" "$ZIP_PATH" \
+            templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx \
+            templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx \
+            templates/calculator/SHA256SUMS.txt \
+            docs/CALCULATOR_TEMPLATE_VERSION.toml \
             --verify-tag \
             --target "$TARGET_SHA" \
             --title "GDIS Data Loader $TAG" \
+            --notes-file templates/calculator/README.md \
             --generate-notes
           gh release view "$TAG" --json url --jq .url

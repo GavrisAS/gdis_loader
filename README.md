@@ -57,7 +57,8 @@ make version
 uv run gdis-loader
 ```
 
-CLI использует тот же application service, что и GUI:
+CLI использует тот же application service, что и GUI. Примеры ниже используют
+structural v2 candidate для testing; native Excel acceptance ещё PENDING:
 
 ```bash
 uv run gdis-loader-cli validate \
@@ -285,3 +286,10 @@ Rebuild candidate в новый путь:
 uv run python scripts/migrate_calculator_template.py templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx /tmp/structural-v2.xlsx
 uv run python scripts/verify_calculator_template.py templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx data artifacts/calculator/final-three-fields
 ```
+
+Windows delivery (release v0.21): отдельные release assets рядом с
+`GDIS_DataLoader-v0.21-windows-x64.zip`: `GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx`,
+`GDIS_Rating_Calculator_v0.19_pre_structural.xlsx`, `SHA256SUMS.txt`,
+`CALCULATOR_TEMPLATE_VERSION.toml`. V2 остаётся candidate/testing до native PASS.
+Checksum paths соответствуют repository layout; для downloaded assets сравнить
+hash по имени файла или разместить их по указанным путям.

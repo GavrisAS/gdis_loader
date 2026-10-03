@@ -1,12 +1,13 @@
 calculator_template_version = 2
 formula_model = "weighted_geometric_active_mask"
 status = "candidate"
-storage = "A: versioned repository assets"
-loader_baseline = "v0.19"
-loader_release_target = "v0.20"
-baseline_commit = "934c005100ac8289957e816cba2f8a2b55914152"
+canonical = false
+storage = "B: separate GitHub Release assets; also tracked in Git"
+loader_baseline = "v0.20"
+loader_release_target = "v0.21"
+baseline_commit = "2ffd13c791072d2bc05d8321b61c4fce636ee32f"
 capacity = 1000
-automated_acceptance = "PASS: uv sync --locked; make check; 480 tests"
+automated_acceptance = "PASS: uv sync --locked; make check; 500 tests"
 native_excel_acceptance = "PENDING"
 
 [source]
@@ -23,7 +24,7 @@ byte_identical = true
 
 [candidate]
 path = "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx"
-size_bytes = 13705198
-sha256 = "8d3a21c237f2af250053664752d55edc0ef7f8ef79a6f3abe7930fabfca8e8d6"
+size_bytes = 13705243
+sha256 = "645a3e5ba9303c42f441598e71fb7da261c9738789638cb5a0e7fceaf97d2578"
 supports_missing_exclusion = true
 supports_removed_criteria_model = true

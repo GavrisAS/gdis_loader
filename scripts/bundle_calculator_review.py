@@ -14,6 +14,8 @@ def bundle() -> Path:
         *sorted((ROOT / "templates/calculator").rglob("*.xlsx")),
         *sorted((ROOT / "docs").glob("CALCULATOR_*")),
         ROOT / "docs/STRUCTURAL_CALCULATOR_MIGRATION.md",
+        ROOT / "templates/calculator/SHA256SUMS.txt",
+        ROOT / "templates/calculator/README.md",
         *sorted((ROOT / "scripts").glob("*calculator*.py")),
         ROOT / "scripts/prepare_excel_golden.py",
         ROOT / "scripts/scan_excel_smoke.py",
@@ -31,9 +33,9 @@ def bundle() -> Path:
         ["git", "tag", "--points-at", "HEAD"], cwd=ROOT, text=True
     ).splitlines()
     audit = {
-        "loader_release_target": "0.20",
+        "loader_release_target": "0.21",
         "loader_commit": commit,
-        "loader_version": "0.20" if "v0.20" in tags else "unreleased",
+        "loader_version": "0.21" if "v0.21" in tags else "unreleased",
         "calculator_template_version": 2,
         "calculator_template_sha256": hashlib.sha256(payloads[candidate]).hexdigest(),
         "rollback_template_version": 1,

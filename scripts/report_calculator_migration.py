@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import posixpath
+import re
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
@@ -14,6 +15,7 @@ from openpyxl.worksheet.cell_range import MultiCellRange
 from gdis_loader.excel.template_migration import (
     CAPACITY,
     EXPECTED_CHANGED,
+    GENERAL_EDITABLE,
     SOURCE_SHA256,
     TEMPLATE_VERSION,
     sha256,
@@ -58,8 +60,12 @@ def report(source: Path, backup: Path, candidate: Path, directory: Path) -> None
                         new_styles.get(cell) == style
                         or (
                             name == "xl/worksheets/sheet2.xml"
-                            and (cell == "B12" or cell.startswith("L"))
-                            and new_styles.get(cell) == "0"
+                            and (
+                                cell in GENERAL_EDITABLE
+                                or re.search(r"(?:28|34)$", cell)
+                                or cell == "B12"
+                                or cell.startswith("L")
+                            )
                         )
                         for cell, style in old_styles.items()
                     )

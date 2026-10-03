@@ -16,7 +16,7 @@ Entry | Expected change / reason
 `xl/worksheets/sheet6.xml` | Add hidden M lookup by ordering key. A shows rank only for ranked wells; B:I display unknown-only wells as well. Preallocate1000 rows. Chart helper ranges unchanged (first30 ranked results).
 `xl/tables/table3.xml` | Extend tblCalculation to row1003. O is an auxiliary column outside the table.
 `xl/tables/table4.xml` | Extend tblRating to row1003. M is auxiliary, outside the table.
-`xl/styles.xml` | Explicitly unlock existing yellow input styles; fixed-policy cells use locked neutral style0 under sheet protection.
+`xl/styles.xml` | Explicit input style contract; clone general input styles to unlock and retired styles to lock; fixed-policy cells use locked neutral style0 under sheet protection.
 `xl/workbook.xml` | Add literal GDIS_TEMPLATE_VERSION=2; explicit automatic full recalculation on load and forceFullCalc.
 `xl/calcChain.xml` | Remove obsolete calculation chain; Excel rebuilds dependencies on full recalculation.
 `xl/_rels/workbook.xml.rels` | Remove only calcChain relationship.
@@ -73,3 +73,5 @@ Removing calcChain is safe for dependency reconstruction: Microsoft documents
 that the chain can be rebuilt from formulas at load time in
 [Working with the calculation chain](https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/working-with-the-calculation-chain).
 Automatic full recalculation is explicitly enabled; cached results are not proof.
+
+Corrective pass for v0.21: see CALCULATOR_CORRECTIVE_DIFF.md.

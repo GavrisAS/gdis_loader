@@ -291,7 +291,7 @@ def _patch_sheet(text: str, number: int) -> str:
             "</t></is></c></row></sheetData>",
         )
         # Fixed policies and retired slots are locked, neutral cells. Protect
-        # settings while keeping the existing yellow input styles unlocked.
+        # settings while keeping the explicit real input contract unlocked.
         text = re.sub(
             r'<dataValidation\b[^>]*sqref="(?:B12|L21:L50)"[^>]*>.*?</dataValidation>',
             "",
@@ -316,6 +316,50 @@ def _patch_sheet(text: str, number: int) -> str:
     return text
 
 
+GENERAL_EDITABLE = frozenset({"B5", "B6", "B7", "B8", "B9", "B10", "B11", "B16"})
+RETIRED_ROWS = (28, 34)
+
+
+def _correct_settings_protection(sheet: str, styles: str) -> tuple[str, str]:
+    """Clone styles only for explicit general inputs and retired setting rows."""
+    block = re.search(r"<cellXfs\b[^>]*>(.*?)</cellXfs>", styles, re.DOTALL)
+    assert block is not None
+    originals = re.findall(r"<xf\b[^>]*?(?:/>|>.*?</xf>)", block.group(1))
+    clones: list[str] = []
+    mapping: dict[tuple[int, bool], int] = {}
+
+    def patch(match: re.Match[str]) -> str:
+        cell = match.group(0)
+        address = match.group(1) + match.group(2)
+        if address not in GENERAL_EDITABLE and int(match.group(2)) not in RETIRED_ROWS:
+            return cell
+        locked = address not in GENERAL_EDITABLE
+        style_match = re.search(r' s="(\d+)"', cell)
+        style_id = int(style_match.group(1)) if style_match else 0
+        original = originals[style_id]
+        protection = ET.fromstring(original).find("protection")
+        if locked and (protection is None or protection.get("locked", "1") == "1"):
+            return cell
+        key = (style_id, locked)
+        if key not in mapping:
+            clone = re.sub(r"<protection\b[^>]*/>", "", original)
+            clone = re.sub(r' applyProtection="[^"]*"', "", clone)
+            clone = clone.replace("<xf ", '<xf applyProtection="1" ', 1)
+            value = int(locked)
+            if clone.endswith("/>"):
+                clone = clone[:-2] + f'><protection locked="{value}"/></xf>'
+            else:
+                clone = clone.replace("</xf>", f'<protection locked="{value}"/></xf>')
+            mapping[key] = len(originals) + len(clones)
+            clones.append(clone)
+        return re.sub(r' s="\d+"', f' s="{mapping[key]}"', cell, count=1)
+
+    sheet = CELL.sub(patch, sheet)
+    updated = block.group(0).replace("</cellXfs>", "".join(clones) + "</cellXfs>")
+    updated = re.sub(r'count="\d+"', f'count="{len(originals) + len(clones)}"', updated, count=1)
+    return sheet, styles[: block.start()] + updated + styles[block.end() :]
+
+
 def migrate(source: Path, output: Path) -> tuple[str, ...]:
     """Produce a separate candidate from the exact accepted source; no overwrite."""
     if sha256(source) != SOURCE_SHA256:
@@ -335,7 +379,9 @@ def migrate(source: Path, output: Path) -> tuple[str, ...]:
 
         def unlock_inputs(match: re.Match[str]) -> str:
             body = match.group(0)
-            if 'fillId="4"' not in body:
+            style_index[0] += 1
+            # Pinned baseline's explicit existing criterion/input style contract.
+            if style_index[0] not in {10, 11, 12, 13, 14, 23, 93}:
                 return body
             body = re.sub(r"<protection\b[^>]*/>", "", body)
             if body.endswith("/>"):
@@ -344,7 +390,22 @@ def migrate(source: Path, output: Path) -> tuple[str, ...]:
                 body = body.replace("</xf>", '<protection locked="0"/></xf>')
             return body.replace("<xf ", '<xf applyProtection="1" ', 1)
 
-        patches[name] = re.sub(r"<xf\b[^>]*(?:/>|>.*?</xf>)", unlock_inputs, styles).encode()
+        style_index = [-1]
+        styles = re.sub(
+            r"(<cellXfs\b[^>]*>)(.*?)(</cellXfs>)",
+            lambda m: (
+                m.group(1)
+                + re.sub(r"<xf\b[^>]*?(?:/>|>.*?</xf>)", unlock_inputs, m.group(2))
+                + m.group(3)
+            ),
+            styles,
+            flags=re.DOTALL,
+        )
+        sheet, styles = _correct_settings_protection(
+            patches["xl/worksheets/sheet2.xml"].decode(), styles
+        )
+        patches["xl/worksheets/sheet2.xml"] = sheet.encode()
+        patches[name] = styles.encode()
         name = "xl/workbook.xml"
         patches[name] = re.sub(
             rb"<calcPr[^>]*/>",
