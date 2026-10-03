@@ -15,6 +15,7 @@ from gdis_loader.domain.models import (
     GdiRecord,
     IssueSeverity,
     PartialDate,
+    ResearchStatusRecord,
     SourceLocation,
     WellEventKind,
     WellHistory,
@@ -111,7 +112,7 @@ def _zbs_ordinal(identity: str) -> int | None:
     return normalize_well_id(identity).ordinal
 
 
-def _record_identity(record: GdiRecord | None, fund_well: FundWell) -> str:
+def _record_identity(record: GdiRecord | ResearchStatusRecord | None, fund_well: FundWell) -> str:
     if record is not None:
         return (
             record.target_well_id
@@ -137,7 +138,7 @@ def _issue(
     code: str,
     message: str,
     fund_well: FundWell,
-    record: GdiRecord | None,
+    record: GdiRecord | ResearchStatusRecord | None,
     stages: tuple[WellStage, ...],
 ) -> DiagnosticIssue:
     locations = list(fund_well.locations)
@@ -157,7 +158,7 @@ def _issue(
 
 def _assign_unsuffixed_record_by_timeline(
     fund_well: FundWell,
-    record: GdiRecord,
+    record: GdiRecord | ResearchStatusRecord,
     history: WellHistory,
 ) -> LifecycleResolution:
     """Assign a root-only GDI label to one exact-plast stage by its date."""
@@ -232,7 +233,7 @@ def _assign_unsuffixed_record_by_timeline(
 
 def _resolve_current_fund_stage(
     fund_well: FundWell,
-    record: GdiRecord | None,
+    record: GdiRecord | ResearchStatusRecord | None,
     history: WellHistory,
     *,
     expected_kind: WellEventKind | None = None,
@@ -331,7 +332,7 @@ def _resolve_current_fund_stage(
 
 def resolve_lifecycle_stage(
     fund_well: FundWell,
-    record: GdiRecord | None,
+    record: GdiRecord | ResearchStatusRecord | None,
     histories: tuple[WellHistory, ...],
 ) -> LifecycleResolution:
     """Assign a source identity to one confirmed lifecycle interval.

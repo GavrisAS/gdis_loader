@@ -76,9 +76,9 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdi_deduplicated_record_count == 1830
     assert result.report.gdi_exact_duplicates_collapsed == 2
     assert result.report.gdi_pre_launch_excluded == 16
-    assert result.report.matched == 69
+    assert result.report.matched == 71
     assert result.report.ambiguous == 3
-    assert result.report.no_gdi == 6
+    assert result.report.no_gdi == 4
     assert result.report.debit_filled == 63
     assert result.report.debit_blank == 15
     assert result.report.debit_valid_day_count == 1505
@@ -86,8 +86,8 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdm_filled_no == 45
     assert result.report.gdm_blank == 28
     assert result.report.gdm_fallback_selected == 12
-    assert result.report.gdm_stale_fallback_rejected == 16
-    assert result.report.gdm_target_candidate_rows == 54
+    assert result.report.gdm_stale_fallback_rejected == 17
+    assert result.report.gdm_target_candidate_rows == 61
     expected_criteria = {
         "insufficient_gdi_min_count": 2,
         "productivity_min_increase": 0.0,
@@ -176,8 +176,23 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         assert controlled[no_kvd_index] == (date(2026, 10, 2) - date(2026, 4, 5)).days / 365
         assert controlled[no_gdi_index] == controlled[no_kvd_index]
         assert rows_by_well["112_ЗБС"][gdm_index] == "Нет"
+        assert rows_by_well["10301_ЗБС"][count_index] == 10
+        assert rows_by_well["10301_ЗБС"][insufficient_index] == "Нет"
+        assert rows_by_well["10301_ЗБС"][lnd_index] == "Да"
+        assert rows_by_well["10301_ЗБС"][downhole_index] == "Нет"
+        assert rows_by_well["10301_ЗБС"][productivity_index] == "Да"
+        assert rows_by_well["10401_ЗБС"][count_index] == 1
+        assert rows_by_well["10401_ЗБС"][lnd_index] == "Да"
+        assert rows_by_well["10401_ЗБС"][downhole_index] == "Да"
+        assert rows_by_well["10405"][headers.index("Пласт")] == "ПК19+20"
+        assert rows_by_well["10405"][count_index] == 0
+        assert rows_by_well["10306"][count_index] == 0
+        assert any(
+            issue.code == "GDI_UNCONFIRMED_LIFECYCLE_RECORDS" and issue.well_id == "10306"
+            for issue in result.report.issues
+        )
         zero_gdi_rows = [row for row in rows_by_well.values() if row[count_index] == 0]
-        assert len(zero_gdi_rows) == 6
+        assert len(zero_gdi_rows) == 4
         for row in zero_gdi_rows:
             launch = row[launch_index].date()
             expected_duration = (date(2026, 10, 2) - launch).days / 365
@@ -189,10 +204,10 @@ def test_real_bundle_update(tmp_path: Path) -> None:
             assert row[lnd_index] is None
             assert row[downhole_index] is None
             assert row[productivity_index] is None
-        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 4
-        assert sum(row[cl_previous_index] is not None for row in zero_gdi_rows) == 3
+        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 2
+        assert sum(row[cl_previous_index] is not None for row in zero_gdi_rows) == 1
         assert sum(row[gdm_index] is not None for row in zero_gdi_rows) == 1
-        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 6
+        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 4
     finally:
         workbook.close()
     with ZipFile(output) as archive:

@@ -274,3 +274,29 @@ def test_no_gdi_and_different_field_do_not_match() -> None:
     assert (
         match_fund_well(_fund(), GdiIndex([_record(field="Пырейное")])).status is MatchStatus.NO_GDI
     )
+
+
+def test_unconfirmed_zbs_is_diagnostic_without_inventing_history() -> None:
+    from gdis_loader.matching.matcher import match_all
+
+    stage = WellStage(
+        "Береговое",
+        "11",
+        "011",
+        "11",
+        "ПК1",
+        WellEventKind.INITIAL,
+        PartialDate(2020, 1, 1, DatePrecision.DAY),
+        1,
+        SourceLocation("history.xlsx", "БЛУ", "I1"),
+        (),
+    )
+    history = WellHistory("Береговое", "11", "011", (), (stage,))
+    results, issues = match_all((_fund(),), GdiIndex([_record(well="11_ЗБС")]), (history,))
+    assert results[0].status is MatchStatus.NO_GDI
+    diagnostic = next(
+        issue for issue in issues if issue.code == "GDI_UNCONFIRMED_LIFECYCLE_RECORDS"
+    )
+    assert diagnostic.well_id == "11"
+    assert "records=1" in diagnostic.message
+    assert history.stages == (stage,)

@@ -137,8 +137,8 @@ def normalize_plast(value: object) -> str | None:
 
     A one-digit hyphen component is a sublayer (``ПК17-2-1`` -> ``ПК17``).
     A two-or-more digit hyphen component is a second primary plast
-    (``ПК19-20`` -> ``ПК19+20``). Comma/plus separated values are parsed one
-    primary at a time and returned in stable numeric order.
+    (``ПК19-20`` -> ``ПК19+20``). Explicit family tokens start primary components; bare plus tokens
+    continue one-digit sublayers only within a sublayer suffix.
     """
 
     if value is None:
@@ -163,18 +163,67 @@ def normalize_plast(value: object) -> str | None:
     return text
 
 
+@dataclass(frozen=True, slots=True)
+class PlastComponent:
+    family: str
+    primary_number: int
+    sublayers: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedPlast:
+    components: tuple[PlastComponent, ...]
+    raw: str
+
+
+def parse_pc_plast(text: str) -> ParsedPlast | None:
+    """Parse normalized ПК tokens before discarding sublayer detail.
+
+    A bare one-digit plus token continues an active sublayer suffix; an
+    explicit ПК token or a multi-digit number starts a primary component.
+    """
+    tokens = re.findall(r"ПК|\d+|[+,/()\-?]", text)
+    if "".join(tokens) != text or not tokens or tokens[0] != "ПК":
+        return None
+    components: list[PlastComponent] = []
+    index = 1
+    sublayer_context = False
+    expect_primary = True
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "ПК":
+            expect_primary = True
+            sublayer_context = False
+        elif token.isdigit():
+            number = int(token)
+            if expect_primary:
+                components.append(PlastComponent("ПК", number))
+                sublayer_context = False
+            elif components:
+                previous = components[-1]
+                components[-1] = PlastComponent(
+                    previous.family, previous.primary_number, (*previous.sublayers, number)
+                )
+                sublayer_context = True
+            else:
+                return None
+            expect_primary = False
+        elif token in {"-", "/", "("}:
+            following = tokens[index + 1] if index + 1 < len(tokens) else ""
+            expect_primary = token == "-" and following.isdigit() and len(following) >= 2
+            sublayer_context = not expect_primary
+        elif token in {"+", ","}:
+            following = tokens[index + 1] if index + 1 < len(tokens) else ""
+            expect_primary = not (
+                token == "+" and sublayer_context and following.isdigit() and len(following) == 1
+            )
+        index += 1
+    return ParsedPlast(tuple(components), text) if components else None
+
+
 def _primary_pc_numbers(text: str) -> list[int]:
-    numbers: list[int] = []
-    for component in re.split(r"[+,]", text):
-        match = re.match(r"^(?:ПК)?(?P<primary>\d+)(?P<tail>.*)$", component)
-        if match is None:
-            continue
-        numbers.append(int(match.group("primary")))
-        tail = match.group("tail")
-        composite = re.match(r"^-(?P<primary>\d{2,})(?:-|$)", tail)
-        if composite is not None:
-            numbers.append(int(composite.group("primary")))
-    return numbers
+    parsed = parse_pc_plast(text)
+    return [component.primary_number for component in parsed.components] if parsed else []
 
 
 def extract_exact_plast_hint(object_name: str) -> str | None:

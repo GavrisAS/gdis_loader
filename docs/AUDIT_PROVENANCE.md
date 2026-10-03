@@ -1,4 +1,4 @@
-# Runtime and audit provenance (v0.17)
+# Runtime and audit provenance (v0.18)
 
 Runtime manifest version 3 stores `run_timestamp_utc`, `runtime_git_commit`,
 `runtime_release_tag`, `python_version`, `calculation_date`, `selected_field`.
@@ -25,15 +25,27 @@ Runtime SourcePaths supply basenames, sizes and SHA-256 in deterministic role
 order. Numeric criteria and origin are snapshotted, without raw config.toml or
 absolute paths. Generated calculator hash is retained if available. Runtime JSON,
 logs, source workbooks and generated calculator bytes are excluded from bundles.
-Aggregate reconciliation and inventory are in REAL_DATA_DELTA_v0.17.md.
+Aggregate reconciliation and inventory are in REAL_DATA_DELTA_v0.18.md.
 
 For release audit, re-run production after commit and tag fetch, then:
 
 ```bash
-GDIS_AUDIT_RUNTIME_REPORT=reports/v017/gdis_after.load-report.json make audit
+GDIS_AUDIT_RUNTIME_REPORT=reports/v018/gdis_after.load-report.json make audit
 ```
 
 Never edit runtime commit/tag to match HEAD. A changed revision requires a new run.
 The final run's source hashes must be compared with the baseline to distinguish
 code-only deltas from input changes. This provenance does not claim equivalence
 for uncommitted changes; use a clean release checkout for final evidence.
+
+## Actual source revalidation
+
+With a runtime report, normal audit is strict: each of the seven input paths
+from runtime `input_paths` is reopened, basename/size/SHA-256 compared against
+the saved manifest. Mismatch or unavailable path fails before manifest/archive
+creation; saved hashes are never silently replaced. Only the privacy-safe
+manifest is archived, with per-source `revalidation_status=matched` and aggregate
+`source_revalidation_status=revalidated`. Internal paths are not serialized.
+The CLI-only `--non-strict` developer option permits unavailable files with
+`unavailable` / `not_revalidated`; byte mismatches still fail. Commit/tag guards
+run before revalidation. Generated calculator bytes remain excluded.

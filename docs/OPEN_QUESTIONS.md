@@ -27,5 +27,13 @@ canonical field name, а у части well identities нет однозначн
 Конкретные source rows, которые не проходят однозначное lifecycle/plast
 сопоставление, остаются нерешёнными с diagnostics и пустыми target cells.
 Агрегаты текущего production run, включая причины и влияние на coverage,
-зафиксированы в [`REAL_DATA_DELTA_v0.13.md`](REAL_DATA_DELTA_v0.13.md). Это
+зафиксированы в [`REAL_DATA_DELTA_v0.18.md`](REAL_DATA_DELTA_v0.18.md). Это
 quality issues источника, а не основание выбирать случайного кандидата.
+
+## Production data quality: 10306 (v0.18)
+
+В истории скважины 10306 отсутствует событие ЗБС, но в источнике ГДИ есть
+исследования 10306_ЗБС. Нужно подтвердить, была ли выполнена ЗБС и с какой
+даты следует считать новую историю. До ответа INITIAL остается подтвержденным
+этапом, current count=0 / NO_GDI; loader сообщает
+`GDI_UNCONFIRMED_LIFECYCLE_RECORDS` и не создает событие из исследований.

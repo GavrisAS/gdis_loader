@@ -134,3 +134,39 @@ def test_parser_does_not_consume_arbitrary_text(raw: str) -> None:
 
 def test_ordinal_branches_do_not_merge() -> None:
     assert normalize_well_id("51збс2").target_well_id != normalize_well_id("51збс").target_well_id
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("ПК19-1+2", "ПК19"),
+        ("ПК-19-1+2", "ПК19"),
+        ("ПК19-2+1?", "ПК19"),
+        ("ПК14-1+2", "ПК14"),
+        ("ПК17-2-1", "ПК17"),
+        ("ПК14-1", "ПК14"),
+        ("ПК19-20", "ПК19+20"),
+        ("ПК19-2+20", "ПК19+20"),
+        ("ПК14+15", "ПК14+15"),
+        ("ПК19/2+ПК20", "ПК19+20"),
+        ("ПК19 + ПК20", "ПК19+20"),
+    ],
+)
+def test_plast_grammar(raw: str, expected: str) -> None:
+    assert normalize_plast(raw) == expected
+
+
+def test_plast_shorthand_never_conflates_joint_primary() -> None:
+    from gdis_loader.matching.normalize import parse_pc_plast
+
+    parsed = parse_pc_plast("ПК19-1+2")
+    assert parsed is not None
+    assert len(parsed.components) == 1
+    assert parsed.components[0].sublayers == (1, 2)
+    assert normalize_plast("ПК19-1+2") != normalize_plast("ПК19+20")
+    assert normalize_plast("ПК14") != normalize_plast("ПК14+15")
+
+
+def test_explicit_primary_token_after_hyphen_is_joint_plast() -> None:
+    assert normalize_plast("ПК19-ПК20") == "ПК19+20"
+    assert normalize_plast("ПК₁₉²,ПК₂₀") == "ПК19+20"

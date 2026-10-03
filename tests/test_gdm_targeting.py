@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from gdis_loader.domain.models import (
     DatePrecision,
     FundCategory,
@@ -210,3 +212,94 @@ def test_no_separator_gdm_identity_recovers_nearest_valid_delta() -> None:
     assert selected.fallback
     assert selected.record.delta_value is not None
     assert not gdm_problem(selected.record.delta_value, abs_delta_threshold=5)
+
+
+@pytest.mark.parametrize(
+    "well,eligible",
+    [
+        ("22_ЗБС", False),
+        ("22_ЗБС1", False),
+        ("22_ЗБС2", False),
+        ("22_ЗБС3", True),
+        ("22_ЗБС_МГРП", True),
+        ("22збс_МГРП", True),
+        ("22_ГС", False),
+        ("22_МЗС", False),
+    ],
+)
+def test_gdm_family_resolution_preserves_explicit_ordinals(well: str, eligible: bool) -> None:
+    stages = tuple(
+        _stage(
+            WellEventKind.ZBS, "22_ЗБС" + (str(i) if i > 1 else ""), date(2020 + i, 1, 1), i, "ПК19"
+        )
+        for i in range(1, 4)
+    )
+    history = WellHistory("Береговое", "22", "022", (), stages)
+    fund = FundWell(
+        "22_ЗБС3",
+        "22",
+        "Береговое",
+        "береговое",
+        "Береговое (ПК19)",
+        FundCategory.PRODUCING,
+        date(2026, 8, 1),
+        7,
+        "C",
+        target_well_id="22_ЗБС3",
+        object_plast_hint="ПК19",
+    )
+    row = _status(well, "ПК19", "КВД", date(2024, 1, 1), 0.0, 10)
+    candidates, _ = _status_candidates_for_target(
+        fund, "22_ЗБС3", "ПК19", stages[-1], (row,), (history,)
+    )
+    assert bool(candidates) == eligible
+    if eligible:
+        assert select_gdm_delta(candidates, fallback_max_age_days=365).record == row
+
+
+def test_10201_annotated_gdm_resolves_zbs3_and_inherited_pvlg() -> None:
+    from dataclasses import replace
+
+    first = replace(
+        _stage(WellEventKind.ZBS, "10201_ЗБС", date(2023, 1, 1), 1, "ПК19"), physical_root="10201"
+    )
+    second = replace(
+        first,
+        target_well_id="10201_ЗБС2",
+        stage_sequence=2,
+        started_at=PartialDate(2024, 1, 1, DatePrecision.DAY),
+    )
+    third = replace(
+        second,
+        target_well_id="10201_ЗБС3",
+        stage_sequence=3,
+        started_at=PartialDate(2025, 1, 1, DatePrecision.DAY),
+    )
+    pvlg = replace(
+        third,
+        event_kind=WellEventKind.PVLG,
+        stage_sequence=4,
+        started_at=PartialDate(2026, 1, 1, DatePrecision.DAY),
+    )
+    history = WellHistory("Береговое", "10201", "10201", (), (first, second, third, pvlg))
+    fund = FundWell(
+        "10201_ЗБС3",
+        "10201",
+        "Береговое",
+        "береговое",
+        "Береговое (ПК19)",
+        FundCategory.PRODUCING,
+        date(2026, 8, 1),
+        7,
+        "C",
+        target_well_id="10201_ЗБС3",
+        object_plast_hint="ПК19",
+    )
+    before = _status("10201_ЗБС_МГРП", "ПК19", "КВД", date(2025, 6, 1), 6, 10)
+    after = _status("10201збс_МГРП", "ПК19", "КВД", date(2026, 6, 1), 0, 11)
+    for stage, expected in ((third, before), (pvlg, after)):
+        candidates, _ = _status_candidates_for_target(
+            fund, "10201_ЗБС3", "ПК19", stage, (before, after), (history,)
+        )
+        assert candidates == (expected,)
+        assert select_gdm_delta(candidates, fallback_max_age_days=365).record == expected

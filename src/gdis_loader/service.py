@@ -40,7 +40,6 @@ from gdis_loader.domain.models import (
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
 from gdis_loader.matching.lifecycle import (
     LifecycleResolution,
-    assign_stage_by_date,
     resolve_lifecycle_stage,
 )
 from gdis_loader.matching.matcher import GdiIndex, match_all
@@ -633,63 +632,6 @@ def _status_candidates_for_target(
         ):
             continue
 
-        exact_lifecycle_identity = (
-            record.target_well_id == target_well_id and target_well_id != fund_well.base_well_id
-        )
-        root_only_identity = record.target_well_id == fund_well.base_well_id
-        if not exact_lifecycle_identity and not root_only_identity:
-            continue
-
-        if exact_lifecycle_identity:
-            if lifecycle_stage is not None:
-                if record.study_date is None:
-                    add_issue(
-                        "WELL_HISTORY_STAGE_AMBIGUOUS",
-                        "Строка статуса с lifecycle suffix без даты не может быть отнесена "
-                        "к текущему этапу.",
-                        record,
-                        (lifecycle_stage.source_location,),
-                    )
-                    continue
-                assignment = assign_stage_by_date(
-                    physical_root=fund_well.base_well_id,
-                    normalized_field=fund_well.normalized_field,
-                    normalized_plast=normalized_plast or "",
-                    observed_at=record.study_date,
-                    histories=histories,
-                    target_identity=record.target_well_id,
-                    observation_location=SourceLocation(
-                        record.source_file,
-                        record.source_sheet,
-                        record.date_cell,
-                    ),
-                )
-                if assignment.stage != lifecycle_stage:
-                    if assignment.issue is not None:
-                        add_issue(
-                            assignment.issue.code,
-                            assignment.issue.message,
-                            record,
-                            assignment.issue.locations,
-                        )
-                    continue
-            if record.normalized_plast == normalized_plast:
-                result.append(record)
-            elif lifecycle_stage is not None:
-                add_issue(
-                    "UNRESOLVED_PLAST_EQUIVALENCE",
-                    "Статус ГДМ имеет ту же lifecycle identity, но другое обозначение пласта; "
-                    "эквивалентность не предполагается.",
-                    record,
-                    (lifecycle_stage.source_location,),
-                )
-            continue
-
-        observation_location = SourceLocation(
-            record.source_file,
-            record.source_sheet,
-            record.date_cell,
-        )
         if record.study_date is None:
             if lifecycle_stage is not None:
                 add_issue(
@@ -699,52 +641,42 @@ def _status_candidates_for_target(
                     (lifecycle_stage.source_location,),
                 )
             continue
-
-        if normalized_plast is None or record.normalized_plast != normalized_plast:
-            if lifecycle_stage is None or lifecycle_stage.plast is None:
-                continue
-            assignment = assign_stage_by_date(
-                physical_root=fund_well.base_well_id,
-                normalized_field=fund_well.normalized_field,
-                normalized_plast=lifecycle_stage.plast,
-                observed_at=record.study_date,
-                histories=histories,
-                observation_location=observation_location,
+        if lifecycle_stage is None:
+            if (
+                record.target_well_id == target_well_id
+                and record.normalized_plast == normalized_plast
+            ):
+                result.append(record)
+            continue
+        assignment = resolve_lifecycle_stage(fund_well, record, histories)
+        if assignment.stage == lifecycle_stage and record.normalized_plast == normalized_plast:
+            result.append(record)
+        elif assignment.issue is not None:
+            temporal = resolve_lifecycle_stage(
+                fund_well,
+                replace(
+                    record, target_well_id=fund_well.base_well_id, normalized_plast=normalized_plast
+                ),
+                histories,
             )
-            if assignment.issue is not None:
+            if temporal.stage == lifecycle_stage:
                 add_issue(
                     assignment.issue.code,
                     assignment.issue.message,
                     record,
                     assignment.issue.locations,
                 )
-            elif assignment.stage == lifecycle_stage:
+        elif record.normalized_plast != normalized_plast:
+            temporal = resolve_lifecycle_stage(
+                fund_well, replace(record, normalized_plast=normalized_plast), histories
+            )
+            if temporal.stage == lifecycle_stage:
                 add_issue(
                     "UNRESOLVED_PLAST_EQUIVALENCE",
-                    "Дата строки статуса ГДМ соответствует текущему этапу, но обозначение "
-                    "пласта отличается; эквивалентность не предполагается.",
+                    "Дата строки статуса ГДМ соответствует текущему этапу, но пласт отличается.",
                     record,
                     (lifecycle_stage.source_location,),
                 )
-            continue
-
-        assignment = assign_stage_by_date(
-            physical_root=fund_well.base_well_id,
-            normalized_field=fund_well.normalized_field,
-            normalized_plast=normalized_plast,
-            observed_at=record.study_date,
-            histories=histories,
-            observation_location=observation_location,
-        )
-        if assignment.stage is not None and assignment.stage == lifecycle_stage:
-            result.append(record)
-        elif assignment.issue is not None:
-            add_issue(
-                assignment.issue.code,
-                assignment.issue.message,
-                record,
-                assignment.issue.locations,
-            )
     issues = tuple(
         DiagnosticIssue(
             code=code,

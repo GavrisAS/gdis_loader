@@ -202,18 +202,49 @@ def attach_audit_provenance(
     return manifest
 
 
+def revalidate_sources(
+    manifest: dict[str, Any], input_paths: dict[str, str | None], *, strict: bool = True
+) -> dict[str, Any]:
+    """Rehash actual runtime files; never replace the recorded evidence."""
+    result = deepcopy(manifest)
+    all_verified = True
+    for entry in result.get("sources", []):
+        role = entry["role"]
+        if role == "generated_calculator":
+            continue
+        reference = input_paths.get(role)
+        path = Path(reference) if reference else None
+        if path is None or not path.is_file():
+            entry["revalidation_status"] = "unavailable"
+            all_verified = False
+            if strict:
+                raise AuditProvenanceError(f"Source revalidation unavailable: {role}.")
+            continue
+        if (
+            PureWindowsPath(path.name).name != entry.get("name")
+            or path.stat().st_size != entry.get("size_bytes")
+            or _sha256(path) != entry.get("sha256")
+        ):
+            raise AuditProvenanceError(f"Source hash revalidation mismatch: {role}.")
+        entry["revalidation_status"] = "matched"
+    result["source_revalidation_status"] = "revalidated" if all_verified else "not_revalidated"
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--runtime-report", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--non-strict", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--calculation-date")
     parser.add_argument("--selected-field")
     parser.add_argument("--generated-calculator", type=Path)
     args = parser.parse_args()
     if args.runtime_report is not None:
-        manifest = json.loads(args.runtime_report.read_text(encoding="utf-8"))["source_manifest"]
+        runtime = json.loads(args.runtime_report.read_text(encoding="utf-8"))
+        manifest = runtime["source_manifest"]
     else:
         loaded = load_config(args.config or config_path()).config
         selected = {role: getattr(loaded, role) for role, _name in SOURCE_FILES}
@@ -240,6 +271,9 @@ def main() -> int:
         manifest["runtime_commit_status"] = "unknown"
         manifest["runtime_release_status"] = "unknown"
     else:
+        manifest = revalidate_sources(
+            manifest, runtime.get("input_paths", {}), strict=not args.non_strict
+        )
         manifest["runtime_evidence_status"] = "runtime_report"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

@@ -327,3 +327,44 @@ def test_manifest_cli_mismatch_fails_before_writing_output(tmp_path: Path) -> No
     assert result.returncode != 0
     assert "Runtime commit differs" in result.stderr
     assert not output.exists()
+
+
+@pytest.mark.parametrize("mutation", ["unchanged", "modified", "same_name", "missing"])
+def test_audit_rehashes_runtime_sources(tmp_path: Path, mutation: str) -> None:
+    from gdis_loader.source_manifest import AuditProvenanceError, revalidate_sources
+
+    path = tmp_path / "source.xlsx"
+    path.write_bytes(b"original")
+    manifest = build_source_manifest(tmp_path, paths=_runtime_paths(tmp_path))
+    import hashlib
+
+    manifest["sources"] = [
+        {
+            "role": "fund",
+            "name": path.name,
+            "size_bytes": 8,
+            "sha256": hashlib.sha256(b"original").hexdigest(),
+            "status": "available",
+        }
+    ]
+    if mutation == "modified":
+        path.write_bytes(b"changed!")
+    elif mutation == "same_name":
+        neighbor = tmp_path / "neighbor"
+        neighbor.mkdir()
+        path = neighbor / path.name
+        path.write_bytes(b"different")
+    elif mutation == "missing":
+        path.unlink()
+    if mutation == "unchanged":
+        result = revalidate_sources(manifest, {"fund": str(path)})
+        assert result["source_revalidation_status"] == "revalidated"
+        assert str(tmp_path) not in json.dumps(result)
+        assert "revalidation_status" not in manifest["sources"][0]
+    else:
+        with pytest.raises(AuditProvenanceError):
+            revalidate_sources(manifest, {"fund": str(path)})
+        if mutation == "missing":
+            result = revalidate_sources(manifest, {"fund": str(path)}, strict=False)
+            assert result["sources"][0]["revalidation_status"] == "unavailable"
+            assert result["source_revalidation_status"] == "not_revalidated"

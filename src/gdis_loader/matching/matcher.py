@@ -18,7 +18,7 @@ from gdis_loader.domain.models import (
     WellStage,
 )
 from gdis_loader.matching.lifecycle import attach_active_fund_branches, resolve_lifecycle_stage
-from gdis_loader.matching.normalize import normalize_well_id
+from gdis_loader.matching.normalize import normalize_field_name, normalize_well_id
 
 RATING_GDI_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
 
@@ -340,6 +340,36 @@ def match_fund_well(
     )
 
 
+def _unconfirmed_identity(
+    record: GdiRecord, fund: FundWell, histories: tuple[WellHistory, ...]
+) -> bool:
+    parsed = normalize_well_id(record.target_well_id or "")
+    if parsed.recognized_variant not in {"ЗБС", "ПВЛГ", "ПНЛГ", "ГС", "МЗС"}:
+        return False
+    relevant = tuple(
+        history
+        for history in histories
+        if history.physical_root == fund.base_well_id
+        and normalize_field_name(history.field_name) == fund.normalized_field
+    )
+    if parsed.separate_identity:
+        return not any(
+            normalize_well_id(history.source_display_well).target_well_id == parsed.target_well_id
+            for history in relevant
+        )
+    stages = tuple(
+        stage
+        for history in relevant
+        for stage in history.stages
+        if stage.event_kind.value == parsed.recognized_variant
+    )
+    return not stages or (
+        parsed.recognized_variant == "ЗБС"
+        and parsed.ordinal is not None
+        and parsed.ordinal > len(stages)
+    )
+
+
 def match_all(
     fund_wells: Iterable[FundWell],
     gdi_index: GdiIndex,
@@ -393,6 +423,45 @@ def match_all(
                     locations=fund_well.locations,
                 )
             )
+            current = resolve_lifecycle_stage(fund_well, None, histories)
+            unconfirmed = tuple(
+                record
+                for record in gdi_index.history_for(fund_well)
+                if _unconfirmed_identity(record, fund_well, histories)
+            )
+            if current.stage is not None and unconfirmed:
+                families = sorted(
+                    {
+                        normalize_well_id(record.target_well_id or "").recognized_variant or ""
+                        for record in unconfirmed
+                    }
+                )
+                dates = sorted(
+                    record.study_date.date().isoformat()
+                    for record in unconfirmed
+                    if record.study_date is not None
+                )
+                plasts = sorted({record.normalized_plast or "unknown" for record in unconfirmed})
+                issues.append(
+                    DiagnosticIssue(
+                        code="GDI_UNCONFIRMED_LIFECYCLE_RECORDS",
+                        severity=IssueSeverity.WARNING,
+                        message=(
+                            f"Physical root {fund_well.base_well_id}: "
+                            f"unconfirmed families {', '.join(families)}; "
+                            f"records={len(unconfirmed)}; "
+                            f"dates={dates[0] if dates else 'unknown'}.."
+                            f"{dates[-1] if dates else 'unknown'}; plasts={', '.join(plasts)}."
+                        ),
+                        source="gdi",
+                        well_id=fund_well.base_well_id,
+                        locations=tuple(
+                            dict.fromkeys(
+                                location for record in unconfirmed for location in record.locations
+                            )
+                        ),
+                    )
+                )
         elif result.status is MatchStatus.INVALID_SOURCE:
             issues.append(
                 DiagnosticIssue(
