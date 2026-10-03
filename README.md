@@ -238,3 +238,13 @@ Frozen manifest берет commit/version из встроенного build modu
 - `docs/REAL_DATA_DELTA_v0.13.md` — полная агрегированная сверка v0.13;
 - `docs/STRUCTURAL_CALCULATOR_MIGRATION.md` — точный gap между blank source data и текущими формулами λ;
 - `prompts/001_initial_implementation.md` — первый подробный промпт для Codex.
+
+
+## Corrective pass v0.17
+
+Общий well-id parser поддерживает `112збс`, `10404збс2`, `54ГС` и separator
+variants. Bare ЗБС в конце строки задает ordinal 1; аннотированный ЗБС
+(`10201збс_МГРП`) имеет unknown ordinal и разрешается по timeline/plast/date.
+GS/MZS не сливаются с root; PVLG/PNLG сохраняют parent identity.
+Production delta: [REAL_DATA_DELTA_v0.17](docs/REAL_DATA_DELTA_v0.17.md).
+Audit provenance: [AUDIT_PROVENANCE](docs/AUDIT_PROVENANCE.md).

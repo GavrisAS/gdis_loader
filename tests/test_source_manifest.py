@@ -30,7 +30,7 @@ def test_source_manifest_hashes_fixture_file_and_uses_deterministic_order(
     first = build_source_manifest(
         tmp_path,
         paths=_runtime_paths(tmp_path),
-        audit_timestamp_utc="2026-10-03T00:00:00+00:00",
+        run_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
         python_version="3.14.0",
@@ -40,7 +40,7 @@ def test_source_manifest_hashes_fixture_file_and_uses_deterministic_order(
     second = build_source_manifest(
         tmp_path,
         paths=_runtime_paths(tmp_path),
-        audit_timestamp_utc="2026-10-03T00:00:00+00:00",
+        run_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
         python_version="3.14.0",
@@ -58,7 +58,7 @@ def test_source_manifest_records_missing_inputs_without_invented_hashes(tmp_path
     manifest = build_source_manifest(
         tmp_path,
         paths=_runtime_paths(tmp_path),
-        audit_timestamp_utc="2026-10-03T00:00:00+00:00",
+        run_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
         python_version="3.14.0",
@@ -82,7 +82,7 @@ def test_manifest_contains_only_metadata_not_source_bytes_or_absolute_paths(
         build_source_manifest(
             tmp_path,
             paths=_runtime_paths(tmp_path),
-            audit_timestamp_utc="2026-10-03T00:00:00+00:00",
+            run_timestamp_utc="2026-10-03T00:00:00+00:00",
             git_commit="abc123",
             release_tag="v0.15",
             python_version="3.14.0",
@@ -103,7 +103,7 @@ def test_generated_calculator_is_hashed_without_being_included(tmp_path: Path) -
     manifest = build_source_manifest(
         tmp_path,
         paths=_runtime_paths(tmp_path),
-        audit_timestamp_utc="2026-10-03T00:00:00+00:00",
+        run_timestamp_utc="2026-10-03T00:00:00+00:00",
         git_commit="abc123",
         release_tag="v0.15",
         python_version="3.14.0",
@@ -207,8 +207,8 @@ def test_manifest_works_without_git_executable(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setattr(module.subprocess, "run", unavailable)
     manifest = build_source_manifest(tmp_path, paths=_runtime_paths(tmp_path))
-    assert manifest["git_commit"] is None
-    assert manifest["release_tag"] is None
+    assert manifest["runtime_git_commit"] is None
+    assert manifest["runtime_release_tag"] is None
 
 
 def test_frozen_manifest_uses_embedded_metadata_without_git(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -226,5 +226,104 @@ def test_frozen_manifest_uses_embedded_metadata_without_git(tmp_path: Path, monk
         module, "_git_value", lambda *_args: pytest.fail("frozen app must not run git")
     )
     manifest = build_source_manifest(tmp_path, paths=_runtime_paths(tmp_path))
-    assert manifest["git_commit"] == "abcdef"
-    assert manifest["release_tag"] == "v0.16"
+    assert manifest["runtime_git_commit"] == "abcdef"
+    assert manifest["runtime_release_tag"] == "v0.16"
+
+
+@pytest.mark.parametrize("runtime_commit,status", [("abc", "matched"), (None, "unknown")])
+def test_audit_preserves_run_and_separates_creation_metadata(
+    runtime_commit: str | None,
+    status: str,
+) -> None:
+    from gdis_loader.source_manifest import attach_audit_provenance
+
+    runtime = {
+        "runtime_git_commit": runtime_commit,
+        "runtime_release_tag": None,
+        "run_timestamp_utc": "run-time",
+        "sources": [],
+        "criteria": {},
+    }
+    original = json.loads(json.dumps(runtime))
+    audited = attach_audit_provenance(
+        runtime, git_commit="abc", release_tag="v0.17", timestamp_utc="audit-time"
+    )
+    assert runtime == original
+    assert audited["run_timestamp_utc"] == "run-time"
+    assert audited["audit_timestamp_utc"] == "audit-time"
+    assert audited["runtime_git_commit"] == runtime_commit
+    assert audited["audit_git_commit"] == "abc"
+    assert audited["runtime_commit_status"] == status
+    assert audited["runtime_release_status"] == "unknown"
+
+
+@pytest.mark.parametrize("commit,tag", [("other", None), ("abc", "v0.16")])
+def test_audit_rejects_mixed_runtime_revision(commit: str, tag: str | None) -> None:
+    from gdis_loader.source_manifest import AuditProvenanceError, attach_audit_provenance
+
+    runtime = {"runtime_git_commit": commit, "runtime_release_tag": tag}
+    original = dict(runtime)
+    with pytest.raises(AuditProvenanceError):
+        attach_audit_provenance(runtime, git_commit="abc", release_tag="v0.17")
+    assert runtime == original
+
+
+def test_audit_validates_legacy_runtime_commit_without_replacing_it() -> None:
+    from gdis_loader.source_manifest import AuditProvenanceError, attach_audit_provenance
+
+    with pytest.raises(AuditProvenanceError):
+        attach_audit_provenance({"git_commit": "old"}, git_commit="new", release_tag=None)
+
+
+def test_audit_matching_release_tag() -> None:
+    from gdis_loader.source_manifest import attach_audit_provenance
+
+    result = attach_audit_provenance(
+        {"runtime_git_commit": "abc", "runtime_release_tag": "v0.17"},
+        git_commit="abc",
+        release_tag="v0.17",
+    )
+    assert result["runtime_release_tag"] == result["audit_release_tag"] == "v0.17"
+    assert result["runtime_release_status"] == "matched"
+
+
+def test_legacy_run_timestamp_is_preserved_during_schema_upgrade() -> None:
+    from gdis_loader.source_manifest import attach_audit_provenance
+
+    runtime = {
+        "manifest_version": 2,
+        "audit_timestamp_utc": "old-run-time",
+        "git_commit": "abc",
+        "release_tag": "v0.17",
+    }
+    result = attach_audit_provenance(
+        runtime, git_commit="abc", release_tag="v0.17", timestamp_utc="new-audit-time"
+    )
+    assert runtime["audit_timestamp_utc"] == "old-run-time"
+    assert result["run_timestamp_utc"] == "old-run-time"
+    assert result["audit_timestamp_utc"] == "new-audit-time"
+    assert result["runtime_git_commit"] == result["git_commit"] == "abc"
+
+
+def test_manifest_cli_mismatch_fails_before_writing_output(tmp_path: Path) -> None:
+    report = tmp_path / "runtime.json"
+    output = tmp_path / "manifest.json"
+    report.write_text(json.dumps({"source_manifest": {"runtime_git_commit": "other-run"}}))
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/source_manifest.py",
+            "--runtime-report",
+            str(report),
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "Runtime commit differs" in result.stderr
+    assert not output.exists()

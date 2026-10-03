@@ -76,17 +76,17 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdi_deduplicated_record_count == 1830
     assert result.report.gdi_exact_duplicates_collapsed == 2
     assert result.report.gdi_pre_launch_excluded == 16
-    assert result.report.matched == 68
+    assert result.report.matched == 69
     assert result.report.ambiguous == 3
-    assert result.report.no_gdi == 7
+    assert result.report.no_gdi == 6
     assert result.report.debit_filled == 63
     assert result.report.debit_blank == 15
     assert result.report.debit_valid_day_count == 1505
     assert result.report.gdm_filled_yes == 5
-    assert result.report.gdm_filled_no == 44
-    assert result.report.gdm_blank == 29
-    assert result.report.gdm_fallback_selected == 11
-    assert result.report.gdm_stale_fallback_rejected == 17
+    assert result.report.gdm_filled_no == 45
+    assert result.report.gdm_blank == 28
+    assert result.report.gdm_fallback_selected == 12
+    assert result.report.gdm_stale_fallback_rejected == 16
     assert result.report.gdm_target_candidate_rows == 54
     expected_criteria = {
         "insufficient_gdi_min_count": 2,
@@ -166,8 +166,18 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         assert rows_by_well["22"][launch_index].date() == date(2004, 3, 1)
         assert rows_by_well["10302_ЗБС"][headers.index("Пласт")] == "ПК16"
         assert rows_by_well["10601_ЗБС"][headers.index("Пласт")] == "ПК19"
+        controlled = rows_by_well["10201_ЗБС3"]
+        assert controlled[count_index] == 1
+        assert controlled[launch_index].date() == date(2026, 1, 22)
+        assert controlled[lnd_index] == "Да"
+        assert controlled[downhole_index] == "Да"
+        assert controlled[productivity_index] is None
+        assert controlled[insufficient_index] == "Да"
+        assert controlled[no_kvd_index] == (date(2026, 10, 2) - date(2026, 4, 5)).days / 365
+        assert controlled[no_gdi_index] == controlled[no_kvd_index]
+        assert rows_by_well["112_ЗБС"][gdm_index] == "Нет"
         zero_gdi_rows = [row for row in rows_by_well.values() if row[count_index] == 0]
-        assert len(zero_gdi_rows) == 7
+        assert len(zero_gdi_rows) == 6
         for row in zero_gdi_rows:
             launch = row[launch_index].date()
             expected_duration = (date(2026, 10, 2) - launch).days / 365
@@ -179,10 +189,10 @@ def test_real_bundle_update(tmp_path: Path) -> None:
             assert row[lnd_index] is None
             assert row[downhole_index] is None
             assert row[productivity_index] is None
-        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 5
+        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 4
         assert sum(row[cl_previous_index] is not None for row in zero_gdi_rows) == 3
         assert sum(row[gdm_index] is not None for row in zero_gdi_rows) == 1
-        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 7
+        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 6
     finally:
         workbook.close()
     with ZipFile(output) as archive:

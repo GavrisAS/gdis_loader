@@ -9,6 +9,7 @@ import json
 import platform
 import subprocess
 import sys
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -70,7 +71,7 @@ def build_source_manifest(
     paths: SourcePaths | None = None,
     criteria: CriteriaConfig | None = None,
     criteria_explicit_fields: frozenset[str] = frozenset(),
-    audit_timestamp_utc: str | None = None,
+    run_timestamp_utc: str | None = None,
     git_commit: str | None = None,
     release_tag: str | None = None,
     python_version: str | None = None,
@@ -104,7 +105,7 @@ def build_source_manifest(
                 generated_calculator,
             )
         )
-    timestamp = audit_timestamp_utc or datetime.now(UTC).isoformat(timespec="seconds")
+    timestamp = run_timestamp_utc or datetime.now(UTC).isoformat(timespec="seconds")
     if getattr(sys, "frozen", False):
         try:
             build = importlib.import_module("gdis_loader._build_version")
@@ -124,13 +125,12 @@ def build_source_manifest(
     tag = release_tag
     if tag is None and not getattr(sys, "frozen", False):
         tag = _git_value(resolved_root, "describe", "--tags", "--exact-match")
-        if tag is None:
-            tag = _git_value(resolved_root, "describe", "--tags", "--abbrev=0")
+
     return {
-        "manifest_version": 2,
-        "audit_timestamp_utc": timestamp,
-        "git_commit": commit,
-        "release_tag": tag,
+        "manifest_version": 3,
+        "run_timestamp_utc": timestamp,
+        "runtime_git_commit": commit,
+        "runtime_release_tag": tag,
         "python_version": python_version or platform.python_version(),
         "calculation_date": calculation_date,
         "selected_field": selected_field,
@@ -164,6 +164,44 @@ def criteria_snapshot(criteria: CriteriaConfig) -> dict[str, dict[str, int | flo
     }
 
 
+class AuditProvenanceError(ValueError):
+    """Runtime evidence does not belong to the audited revision."""
+
+
+def attach_audit_provenance(
+    runtime_manifest: dict[str, Any],
+    *,
+    git_commit: str | None,
+    release_tag: str | None,
+    timestamp_utc: str | None = None,
+) -> dict[str, Any]:
+    """Preserve runtime evidence and fail on a known revision/tag mismatch."""
+    manifest = deepcopy(runtime_manifest)
+    runtime_commit = manifest.get("runtime_git_commit", manifest.get("git_commit"))
+    runtime_tag = manifest.get("runtime_release_tag", manifest.get("release_tag"))
+    if runtime_commit is not None and runtime_commit != git_commit:
+        raise AuditProvenanceError("Runtime commit differs from audited HEAD.")
+    if runtime_tag is not None and runtime_tag != release_tag:
+        raise AuditProvenanceError("Runtime release tag differs from audited HEAD tag.")
+    if manifest.get("manifest_version") == 2:
+        # v2 called the runtime timestamp an audit timestamp. Preserve the event
+        # under its correct name before adding actual bundle creation metadata.
+        manifest.setdefault("run_timestamp_utc", manifest.get("audit_timestamp_utc"))
+        manifest.setdefault("runtime_git_commit", runtime_commit)
+        manifest.setdefault("runtime_release_tag", runtime_tag)
+        manifest["manifest_version"] = 3
+    manifest.update(
+        {
+            "audit_timestamp_utc": timestamp_utc or datetime.now(UTC).isoformat(timespec="seconds"),
+            "audit_git_commit": git_commit,
+            "audit_release_tag": release_tag,
+            "runtime_commit_status": "matched" if runtime_commit is not None else "unknown",
+            "runtime_release_status": "matched" if runtime_tag is not None else "unknown",
+        }
+    )
+    return manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -176,8 +214,6 @@ def main() -> int:
     args = parser.parse_args()
     if args.runtime_report is not None:
         manifest = json.loads(args.runtime_report.read_text(encoding="utf-8"))["source_manifest"]
-        manifest["git_commit"] = _git_value(args.root, "rev-parse", "HEAD")
-        manifest["release_tag"] = _git_value(args.root, "describe", "--tags", "--exact-match")
     else:
         loaded = load_config(args.config or config_path()).config
         selected = {role: getattr(loaded, role) for role, _name in SOURCE_FILES}
@@ -191,6 +227,20 @@ def main() -> int:
             selected_field=args.selected_field,
             generated_calculator=args.generated_calculator,
         )
+    manifest = attach_audit_provenance(
+        manifest,
+        git_commit=_git_value(args.root, "rev-parse", "HEAD"),
+        release_tag=_git_value(args.root, "describe", "--tags", "--exact-match"),
+    )
+    if args.runtime_report is None:
+        manifest["runtime_evidence_status"] = "not_executed_config_snapshot"
+        manifest["run_timestamp_utc"] = None
+        manifest["runtime_git_commit"] = None
+        manifest["runtime_release_tag"] = None
+        manifest["runtime_commit_status"] = "unknown"
+        manifest["runtime_release_status"] = "unknown"
+    else:
+        manifest["runtime_evidence_status"] = "runtime_report"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",

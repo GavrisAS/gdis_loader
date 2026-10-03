@@ -172,3 +172,24 @@ research date, latest/fallback и возраст fallback.
 обеспечивают это поведение полностью; точный gap описан в
 [`STRUCTURAL_CALCULATOR_MIGRATION.md`](STRUCTURAL_CALCULATOR_MIGRATION.md).
 В этой версии формулы и остальные листы не изменяются.
+
+
+## Corrective pass v0.17: well-id grammar
+
+Общий `normalize_well_id` используется фондом, ГДИ, ГДМ (research status),
+ЛХА, history и daily readers. Parser извлекает physical root (`base_well_id`),
+family (`recognized_variant`), `ordinal`, `annotation` и `raw`.
+Для известных markers поддержаны `_`, пробел, дефис и отсутствие разделителя:
+`112збс -> 112_ЗБС`, `10404збс2 -> 10404_ЗБС2`, `54ГС -> 54_ГС`.
+ГС/МЗС остаются отдельными identities; неизвестный текст не угадывается.
+
+Bare ЗБС означает ordinal 1 только в конце строки. Explicit `ЗБС1`, `ЗБС 1`
+canonicalize в `_ЗБС`; ordinal 2+ сохраняется. Аннотированные `_ЗБС_МГРП`,
+`ЗБС МГРП`, `_ЗБС_ПИЛОТ2`, `_ЗБС(ГС1+ГС2)` имеют family ЗБС,
+**ordinal=None**, сохраняют annotation и не становятся `_ЗБС`.
+ГДИ такой family назначается по confirmed timeline, field, plast, date и fund
+scope; suffix не выбирает ЗБС1. До первой ЗБС либо при конфликте assignment
+не выполняется. PVLG/PNLG inheritance, separate GS/MZS, NO_GDI и independent
+Debit/GDM/LHA semantics сохраняются.
+
+Сверка production и aggregate inventory: [REAL_DATA_DELTA_v0.17.md](REAL_DATA_DELTA_v0.17.md).

@@ -467,3 +467,56 @@ def test_root_row_does_not_choose_between_explicit_active_siblings() -> None:
     assert root.issue.code == "WELL_HISTORY_ACTIVE_BRANCH_AMBIGUOUS"
     assert resolve_lifecycle_stage(wells[1], None, (history,)).identity == "51_ЗБС"
     assert resolve_lifecycle_stage(wells[2], None, (history,)).identity == "51_ЗБС2"
+
+
+@pytest.mark.parametrize("identity", ["51_ЗБС_МГРП", "51збс_МГРП", "51 ЗБС МГРП"])
+def test_annotated_zbs_uses_current_timeline_not_first_ordinal(identity: str) -> None:
+    from gdis_loader.matching.lifecycle import propagate_stage_identities
+
+    stages = (
+        _stage(WellEventKind.INITIAL, PartialDate(2010, 1, 1, DatePrecision.DAY), "ПК1", 3),
+        _stage(WellEventKind.ZBS, PartialDate(2021, 1, 1, DatePrecision.DAY), "ПК1", 4),
+        _stage(WellEventKind.ZBS, PartialDate(2022, 1, 1, DatePrecision.DAY), "ПК2", 5),
+        _stage(WellEventKind.ZBS, PartialDate(2023, 1, 1, DatePrecision.DAY), "ПК3", 6),
+    )
+    history = propagate_stage_identities(replace(_history(), events=(), stages=stages))
+    stages = history.stages
+    resolution = resolve_lifecycle_stage(
+        _fund("51", "ПК3"),
+        _record(identity, datetime(2024, 1, 1), "ПК3"),
+        (history,),
+    )
+    assert resolution.stage == stages[3]
+    assert resolution.stage is not None
+    assert resolution.stage.target_well_id == "51_ЗБС3"
+    assert resolution.issue is None
+    # Annotation cannot use an old plast to jump backwards after a new boundary.
+    old = resolve_lifecycle_stage(
+        _fund("51", "ПК1"),
+        _record(identity, datetime(2024, 1, 1), "ПК1"),
+        (history,),
+    )
+    assert old.stage is None
+
+
+def test_annotated_lha_identity_uses_date_and_plast() -> None:
+    history = _history()
+    resolution = assign_stage_by_date(
+        physical_root="51",
+        normalized_field="береговое",
+        normalized_plast="ПК2",
+        observed_at=datetime(2024, 1, 1),
+        histories=(history,),
+        observation_location=SourceLocation("lha.xlsm", "sheet", "A3"),
+        target_identity="51_ЗБС_МГРП",
+    )
+    assert resolution.stage == history.stages[2]
+
+
+def test_annotated_zbs_cannot_be_assigned_before_first_zbs() -> None:
+    result = resolve_lifecycle_stage(
+        _fund("51"),
+        _record("51_ЗБС_МГРП", datetime(2015, 1, 1)),
+        (_history(),),
+    )
+    assert result.stage is None

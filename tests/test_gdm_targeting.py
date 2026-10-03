@@ -166,3 +166,47 @@ def test_explicit_gdm_ordinal_is_not_blocked_by_newer_sibling() -> None:
     )
     assert selected == (delta,)
     assert not issues
+
+
+def test_no_separator_gdm_identity_recovers_nearest_valid_delta() -> None:
+    from dataclasses import replace
+
+    from gdis_loader.transforms.research_status import gdm_problem
+
+    initial = _stage(WellEventKind.INITIAL, "22", date(2020, 1, 1), 3, "ПК1")
+    zbs = _stage(WellEventKind.ZBS, "22_ЗБС", date(2022, 12, 1), 4, "ПК1")
+    history = WellHistory("Береговое", "22", "022", (), (initial, zbs))
+    fund = FundWell(
+        raw_display="22_ЗБС",
+        base_well_id="22",
+        target_well_id="22_ЗБС",
+        field_name="Береговое",
+        normalized_field="береговое",
+        object_name="Береговое (ПК1)",
+        source_category=FundCategory.PRODUCING,
+        fund_date=date(2026, 8, 1),
+        source_row=7,
+        source_column="C",
+        object_plast_hint="ПК1",
+    )
+    older = _status("22_ЗБС", "ПК1", "КВД", date(2024, 3, 15), -0.44, 10)
+    nearest = _status("22збс", "ПК1", "КВД", date(2025, 2, 28), -1.35, 11)
+    latest = replace(
+        _status("22", "ПК1", "КВД", date(2025, 8, 30), 0, 12), delta_raw=None, delta_value=None
+    )
+    candidates, issues = _status_candidates_for_target(
+        fund,
+        "22_ЗБС",
+        "ПК1",
+        zbs,
+        (older, nearest, latest),
+        (history,),
+    )
+    assert not issues
+    selected = select_gdm_delta(candidates, fallback_max_age_days=365)
+    assert selected.record == nearest
+    assert selected.latest_relevant == latest
+    assert selected.age_days == 183
+    assert selected.fallback
+    assert selected.record.delta_value is not None
+    assert not gdm_problem(selected.record.delta_value, abs_delta_threshold=5)

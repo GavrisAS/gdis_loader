@@ -12,7 +12,7 @@ from gdis_loader.matching.normalize import normalize_plast, normalize_well_id
         (11, "11", "11"),
         (11.0, "11", "11"),
         ("11_ЗБС", "11", "11_ЗБС"),
-        ("011_ЗБС 3", "11", "11_ЗБС 3"),
+        ("011_ЗБС 3", "11", "11_ЗБС3"),
         ("10501_збс(ГС1+ГС2)", "10501", "10501_ЗБС(ГС1+ГС2)"),
         ("10304_МЗС", "10304", "10304_МЗС"),
         ("54 ГС", "54", "54_ГС"),
@@ -85,3 +85,52 @@ def test_actual_lha_superscript_plast_is_supported() -> None:
 )
 def test_customer_plast_examples(raw: str, expected: str) -> None:
     assert normalize_plast(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,ordinal",
+    [
+        ("51_ЗБС", 1),
+        ("51збс", 1),
+        ("51-ЗБС", 1),
+        ("51 ЗБС", 1),
+        ("51_ЗБС1", 1),
+        ("51_ЗБС2", 2),
+        ("51збс2", 2),
+        ("51 ЗБС 3", 3),
+        ("51_ЗБС_МГРП", None),
+        ("51збс_МГРП", None),
+        ("51 ЗБС МГРП", None),
+        ("51_ЗБС_ПИЛОТ2", None),
+        ("51_ЗБС(ГС1+ГС2)", None),
+    ],
+)
+def test_zbs_explicit_ordinal_and_annotated_family(raw: str, ordinal: int | None) -> None:
+    parsed = normalize_well_id(raw)
+    assert parsed.base_well_id == "51"
+    assert parsed.recognized_variant == "ЗБС"
+    assert parsed.ordinal == ordinal
+    assert (parsed.annotation is not None) == (ordinal is None)
+    if ordinal is None:
+        assert parsed.target_well_id != "51_ЗБС"
+
+
+@pytest.mark.parametrize(
+    "root,family",
+    [("112", "ЗБС"), ("10404", "ЗБС2"), ("10201", "ЗБС_МГРП"), ("54", "ГС"), ("54", "МЗС")],
+)
+def test_separator_variants_share_canonical_identity(root: str, family: str) -> None:
+    parsed = [normalize_well_id(root + separator + family) for separator in ("_", " ", "", "-")]
+    assert len({item.target_well_id for item in parsed}) == 1
+    assert all(item.base_well_id == root for item in parsed)
+    assert parsed[0].target_well_id != root
+    assert parsed[0].separate_identity == (family in {"ГС", "МЗС"})
+
+
+@pytest.mark.parametrize("raw", ["51ЗБСОМ", "51ГСАР", "51-МЗСВ", "51-22"])
+def test_parser_does_not_consume_arbitrary_text(raw: str) -> None:
+    assert normalize_well_id(raw).recognized_variant is None
+
+
+def test_ordinal_branches_do_not_merge() -> None:
+    assert normalize_well_id("51збс2").target_well_id != normalize_well_id("51збс").target_well_id

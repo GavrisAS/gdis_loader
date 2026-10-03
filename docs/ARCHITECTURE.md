@@ -32,7 +32,7 @@ Readers сохраняют исходные ячейки и provenance. Вали
 `base_well_id` — физический root только для lineage поиска. Target identity
 включает field, root, lifecycle stage и canonical plast. `ЗБС`, `ПВЛГ`, `ПНЛГ`
 начинают новую history; `ПВР`, `КЛК` и прочие ГТМ не начинают. Перевод после
-`ПВЛГ`/`ПНЛГ` всегда отображает `physical_root` без source suffix; lifecycle
+`ПВЛГ`/`ПНЛГ` сохраняет подтвержденную parent identity (включая ordinal ЗБС); lifecycle
 history при этом остаётся отдельной и влияет на дату запуска, ГДИ, ЛХА, ГДМ и
 производные значения.
 Последовательные current ЗБС получают детерминированные ordinals по fund и
@@ -91,3 +91,24 @@ change не invalidates. Progress достигает 100 только при у�
 GitHub Actions, Python 3.14, `uv sync --locked`, quality checks, PyInstaller
 `onedir`, frozen version smoke-test и автоматически тегируется только после
 успешного push в `main`.
+
+
+## Corrective pass v0.17: well-id grammar
+
+Общий `normalize_well_id` используется фондом, ГДИ, ГДМ (research status),
+ЛХА, history и daily readers. Parser извлекает physical root (`base_well_id`),
+family (`recognized_variant`), `ordinal`, `annotation` и `raw`.
+Для известных markers поддержаны `_`, пробел, дефис и отсутствие разделителя:
+`112збс -> 112_ЗБС`, `10404збс2 -> 10404_ЗБС2`, `54ГС -> 54_ГС`.
+ГС/МЗС остаются отдельными identities; неизвестный текст не угадывается.
+
+Bare ЗБС означает ordinal 1 только в конце строки. Explicit `ЗБС1`, `ЗБС 1`
+canonicalize в `_ЗБС`; ordinal 2+ сохраняется. Аннотированные `_ЗБС_МГРП`,
+`ЗБС МГРП`, `_ЗБС_ПИЛОТ2`, `_ЗБС(ГС1+ГС2)` имеют family ЗБС,
+**ordinal=None**, сохраняют annotation и не становятся `_ЗБС`.
+ГДИ такой family назначается по confirmed timeline, field, plast, date и fund
+scope; suffix не выбирает ЗБС1. До первой ЗБС либо при конфликте assignment
+не выполняется. PVLG/PNLG inheritance, separate GS/MZS, NO_GDI и independent
+Debit/GDM/LHA semantics сохраняются.
+
+Сверка production и aggregate inventory: [REAL_DATA_DELTA_v0.17.md](REAL_DATA_DELTA_v0.17.md).

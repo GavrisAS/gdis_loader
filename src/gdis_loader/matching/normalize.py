@@ -8,16 +8,12 @@ from dataclasses import dataclass
 
 _SPACE_RE = re.compile(r"\s+")
 _NUMERIC_RE = re.compile(r"^(?P<digits>\d+)(?:\.0+)?$")
-_KNOWN_VARIANT_RE = re.compile(
-    r"^(ЗБС|ПВЛГ|ПНЛГ|ПВР|КЛК|МЗС|ГС)(?:\s*\d+)?(?:$|[ _(\-](?!\d).*)$",
+_WELL_VARIANT_RE = re.compile(
+    r"^(?P<number>\d+)[ _-]*(?P<family>ЗБС|ПВЛГ|ПНЛГ|ПВР|КЛК|МЗС|ГС)"
+    r"(?P<tail>(?:\s*\d+)?(?:$|[ _(\-].*))$",
     re.IGNORECASE,
 )
 _UNDERSCORE_SUFFIX_RE = re.compile(r"^(?P<number>\d+)\s*_\s*(?P<suffix>.+)$")
-_SPACE_VARIANT_RE = re.compile(
-    r"^(?P<number>\d+)\s+(?P<suffix>(?:ЗБС|ПВЛГ|ПНЛГ|ПВР|КЛК|МЗС|ГС)(?=$|[\s_\d(]).*)$",
-    re.IGNORECASE,
-)
-_GAS_BRANCH_RE = re.compile(r"^(?P<number>\d+)\s+ГС(?:$|[\s_(\d]).*$", re.IGNORECASE)
 _PLAST_PREFIX_RE = re.compile(r"^(?P<prefix>[А-ЯA-Z]+)\s*-\s*(?=\d)")
 _PLAST_SPACE_RE = re.compile(r"^(?P<prefix>[А-ЯA-Z]+)\s+(?=\d)")
 _PLAST_PAREN_RE = re.compile(r"^(?P<prefix>[А-ЯA-Z]+)(?P<base>\d+)[(/](?P<part>\d+)\)?$")
@@ -34,6 +30,13 @@ class NormalizedWell:
     base_well_id: str | None
     target_well_id: str | None = None
     recognized_variant: str | None = None
+    ordinal: int | None = None
+    annotation: str | None = None
+
+    @property
+    def separate_identity(self) -> bool:
+        """GS/MZS never share the mother-well identity."""
+        return self.recognized_variant in {"ГС", "МЗС"}
 
 
 def _clean_text(value: object) -> str:
@@ -65,32 +68,35 @@ def normalize_well_id(value: object) -> NormalizedWell:
         return NormalizedWell(raw=raw, base_well_id=numeric, target_well_id=numeric)
 
     upper = raw.upper()
-    variant = _SPACE_VARIANT_RE.fullmatch(upper)
-    suffix_match = _UNDERSCORE_SUFFIX_RE.fullmatch(upper)
-    if variant is not None or suffix_match is not None:
-        match = variant or suffix_match
-        assert match is not None
-        number = str(int(match.group("number")))
-        suffix = match.group("suffix").strip()
-        canonical_suffix = _SPACE_RE.sub(" ", suffix)
-        known_variant = _KNOWN_VARIANT_RE.match(canonical_suffix)
+    variant = _WELL_VARIANT_RE.fullmatch(upper)
+    if variant is not None:
+        number = str(int(variant.group("number")))
+        family = variant.group("family")
+        tail = variant.group("tail").strip()
+        explicit = re.fullmatch(r"\d*", tail)
+        ordinal = (int(tail) if tail else 1) if explicit is not None else None
+        annotation = None if explicit is not None else tail.strip(" _-")
+        suffix = family
+        if explicit is not None:
+            if tail and (family != "ЗБС" or ordinal != 1):
+                suffix += str(ordinal)
+        elif annotation:
+            suffix += annotation if annotation.startswith("(") else "_" + annotation
         return NormalizedWell(
             raw=raw,
             base_well_id=number,
-            target_well_id=f"{number}_{canonical_suffix}",
-            recognized_variant=known_variant.group(1).upper() if known_variant else None,
+            target_well_id=f"{number}_{suffix}",
+            recognized_variant=family,
+            ordinal=ordinal,
+            annotation=annotation,
         )
-
-    # Keep nonnumeric identifiers whole. The old gas-branch spelling is
-    # normalized as a distinct target identity while retaining its root.
-    gas_branch = _GAS_BRANCH_RE.fullmatch(upper)
-    if gas_branch is not None:
-        number = str(int(gas_branch.group("number")))
+    suffix_match = _UNDERSCORE_SUFFIX_RE.fullmatch(upper)
+    if suffix_match is not None:
+        number = str(int(suffix_match.group("number")))
         return NormalizedWell(
             raw=raw,
             base_well_id=number,
-            target_well_id=f"{number}_ГС",
-            recognized_variant="ГС",
+            target_well_id=f"{number}_{suffix_match.group('suffix').strip()}",
         )
     return NormalizedWell(raw=raw, base_well_id=upper, target_well_id=upper)
 

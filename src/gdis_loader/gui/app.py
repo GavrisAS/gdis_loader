@@ -731,10 +731,10 @@ def smoke_test(expected_version: str | None = None) -> int:
         from gdis_loader.source_manifest import build_source_manifest
 
         manifest = build_source_manifest(Path(sys.executable).resolve().parent)
-        commit = manifest["git_commit"]
+        commit = manifest["runtime_git_commit"]
         if not isinstance(commit, str) or len(commit) != 40:
             raise RuntimeError("Frozen manifest должен содержать встроенный git commit.")
-        if manifest["release_tag"] != f"v{__version__}":
+        if manifest["runtime_release_tag"] != f"v{__version__}":
             raise RuntimeError("Версия frozen manifest не совпадает со встроенной версией.")
         executable_directory = Path(sys.executable).resolve().parent
         if location.parent != executable_directory:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -108,13 +107,8 @@ def _variant_kind(identity: str) -> str | None:
     return normalize_well_id(identity).recognized_variant
 
 
-def _zbs_ordinal(identity: str) -> int:
-    normalized = normalize_well_id(identity)
-    if normalized.base_well_id is None or normalized.target_well_id is None:
-        return 1
-    suffix = normalized.target_well_id.removeprefix(f"{normalized.base_well_id}_")
-    match = re.fullmatch(r"ЗБС\s*(\d*)", suffix)
-    return int(match.group(1)) if match is not None and match.group(1) else 1
+def _zbs_ordinal(identity: str) -> int | None:
+    return normalize_well_id(identity).ordinal
 
 
 def _record_identity(record: GdiRecord | None, fund_well: FundWell) -> str:
@@ -498,7 +492,7 @@ def resolve_lifecycle_stage(
                 )
             )
             ordinal = _zbs_ordinal(identity)
-            if ordinal <= len(all_zbs):
+            if ordinal is not None and ordinal <= len(all_zbs):
                 selected_zbs = all_zbs[ordinal - 1]
                 return LifecycleResolution(
                     selected_zbs if plast is None or selected_zbs.plast == plast else None,
@@ -532,9 +526,10 @@ def resolve_lifecycle_stage(
     preceding = tuple(
         stage for stage in all_stages if study_day >= effective_calendar_date(stage.started_at)
     )
-    if variant == "ЗБС":
+    if variant == "ЗБС" and _zbs_ordinal(identity) is not None:
         all_zbs = tuple(stage for stage in all_stages if stage.event_kind is WellEventKind.ZBS)
         ordinal = _zbs_ordinal(identity)
+        assert ordinal is not None
         if ordinal > len(all_zbs):
             return LifecycleResolution(
                 None,
@@ -575,7 +570,10 @@ def resolve_lifecycle_stage(
             ),
         )
     selected = latest[0]
-    if variant == "ЗБС":
+    if variant == "ЗБС" and (
+        _zbs_ordinal(identity) is not None
+        or normalize_well_id(selected.target_well_id or "").recognized_variant == "ЗБС"
+    ):
         expected_kind = selected.event_kind
     if selected.event_kind is not expected_kind or (plast is not None and selected.plast != plast):
         return LifecycleResolution(
@@ -645,6 +643,7 @@ def assign_stage_by_date(
     if (
         target_identity is not None
         and normalize_well_id(target_identity).recognized_variant == "ЗБС"
+        and normalize_well_id(target_identity).ordinal is not None
     ):
         all_stages = tuple(stage for stage in all_stages if stage.target_well_id == target_identity)
     preceding = tuple(
