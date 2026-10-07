@@ -201,3 +201,11 @@ def test_criteria_save_preserves_other_path_and_setting_sections(tmp_path: Path)
     assert result.preserved_settings["other"] == {"keep": "value"}
     assert result.criteria == CriteriaConfig(gdm_abs_delta_threshold=7.0)
     assert result.criteria_explicit_fields == frozenset(CriteriaConfig().as_dict())
+
+
+def test_old_explicit_gdm_window_is_preserved_and_missing_uses_new_default(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[criteria.gdm]\nfallback_max_age_days = 365\n", encoding="utf-8")
+    assert load_config(path).config.criteria.gdm_fallback_max_age_days == 365
+    path.write_text("[criteria.gdm]\nabs_delta_threshold = 5\n", encoding="utf-8")
+    assert load_config(path).config.criteria.gdm_fallback_max_age_days == 730

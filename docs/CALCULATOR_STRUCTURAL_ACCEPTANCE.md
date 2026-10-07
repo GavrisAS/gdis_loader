@@ -1,3 +1,12 @@
+# Acceptance update — v0.22
+
+The user confirmed native Microsoft Excel acceptance of the exact v0.21 structural
+v2 template in the v0.22 task on 2026-10-07: sheets, formulas, λ/rank and automatic
+recalculation work. SHA-256 remains 645a3e5ba9303c42f441598e71fb7da261c9738789638cb5a0e7fceaf97d2578.
+Template version2 is canonical and accepted; no new native acceptance is required
+for the byte-identical v0.22 delivery. The historical pre-acceptance audit below
+retains its original PENDING observations for traceability; this update supersedes them.
+
 # Structural template v2 acceptance
 
 Automated structural acceptance: **PASS**.

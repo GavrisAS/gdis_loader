@@ -66,4 +66,4 @@ def test_year_defaulting_is_injected_as_effective_calendar_date() -> None:
     launch = PartialDate(2024, None, None, DatePrecision.YEAR)
 
     assert launch.year == 2024
-    assert CriteriaConfig().gdm_fallback_max_age_days == 365
+    assert CriteriaConfig().gdm_fallback_max_age_days == 730

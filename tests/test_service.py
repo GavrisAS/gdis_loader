@@ -915,7 +915,7 @@ def test_gdm_status_row_fills_problem_flag_from_latest_valid_delta() -> None:
         raw_plast="ПК-1",
         normalized_plast="ПК1",
         research_type="ИД",
-        study_date=PartialDate(2024, 1, None, DatePrecision.MONTH),
+        study_date=PartialDate(2025, 1, None, DatePrecision.MONTH),
         delta_raw=6.0,
         delta_value=6.0,
         delta_formula_without_cache=False,

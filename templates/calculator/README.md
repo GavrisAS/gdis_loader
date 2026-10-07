@@ -1,11 +1,12 @@
 # Calculator assets (tracked, immutable baseline)
 
 Delivery option B: both templates, SHA256SUMS.txt and CALCULATOR_TEMPLATE_VERSION.toml
-are separate GitHub Release assets alongside the Windows loader ZIP (v0.21).
+are separate GitHub Release assets alongside the Windows loader ZIP (v0.22).
 Both XLSX files also survive a clean clone.
 `SHA256SUMS.txt` uses repository-root paths; run `sha256sum -c` from root.
 
-Version2 is a candidate pending native Excel acceptance. Capacity1000; model
+Version2 was accepted by the user in native Microsoft Excel (confirmed 2026-10-07).
+The v0.22 delivery retains the exact v0.21 template bytes. Capacity1000; model
 weighted_geometric_active_mask. Runtime never modifies template formulas.
 Archive version1 is exactly the pinned pre-structural v0.19 calculator, capacity100.
 Do not regenerate or modify archive. Choose it in the same loader for rollback.

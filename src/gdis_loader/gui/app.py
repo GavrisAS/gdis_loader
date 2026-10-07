@@ -100,7 +100,14 @@ _CRITERIA_ROWS: tuple[tuple[str, str, str, str, str, bool], ...] = (
     ("chlorine_delta_min_mg_dm3", "Рост хлора", "Рост Cl", "ΔCl > value", "мг/дм³", False),
     ("downhole_depth_threshold_m", "Глубинные датчики", "Глубина", "depth > value", "м", False),
     ("gdm_abs_delta_threshold", "Проблемы ГДМ", "Абсолютная Δ", "abs(Δ) > value", "-", False),
-    ("gdm_fallback_max_age_days", "Проблемы ГДМ", "Давность fallback", "age ≤ value", "дней", True),
+    (
+        "gdm_fallback_max_age_days",
+        "Проблемы ГДМ",
+        "Возраст Δ (730 = 2 года)",
+        "age ≤ value",
+        "дней",
+        True,
+    ),
     (
         "gas_rate_working_day_min_rate",
         "Дебит",

@@ -76,18 +76,19 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdi_deduplicated_record_count == 1830
     assert result.report.gdi_exact_duplicates_collapsed == 2
     assert result.report.gdi_pre_launch_excluded == 16
-    assert result.report.matched == 71
-    assert result.report.ambiguous == 3
-    assert result.report.no_gdi == 4
-    assert result.report.debit_filled == 63
-    assert result.report.debit_blank == 15
-    assert result.report.debit_valid_day_count == 1505
-    assert result.report.gdm_filled_yes == 5
-    assert result.report.gdm_filled_no == 45
-    assert result.report.gdm_blank == 28
-    assert result.report.gdm_fallback_selected == 12
-    assert result.report.gdm_stale_fallback_rejected == 17
-    assert result.report.gdm_target_candidate_rows == 61
+    # v0.22 Summary plast restores current-history GDI; golden counts are audited.
+    assert result.report.matched == 77
+    assert result.report.ambiguous == 0
+    assert result.report.no_gdi == 1
+    assert result.report.debit_filled == 66
+    assert result.report.debit_blank == 12
+    assert result.report.debit_valid_day_count == 1580
+    assert result.report.gdm_filled_yes == 3
+    assert result.report.gdm_filled_no == 38
+    assert result.report.gdm_blank == 37
+    assert result.report.gdm_fallback_selected == 11
+    assert result.report.gdm_stale_fallback_rejected == 30
+    assert result.report.gdm_target_candidate_rows == 70
     expected_criteria = {
         "insufficient_gdi_min_count": 2,
         "productivity_min_increase": 0.0,
@@ -95,7 +96,7 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         "chlorine_delta_min_mg_dm3": 1000.0,
         "downhole_depth_threshold_m": 0.0,
         "gdm_abs_delta_threshold": 5.0,
-        "gdm_fallback_max_age_days": 365,
+        "gdm_fallback_max_age_days": 730,
         "gas_rate_working_day_min_rate": 0.0,
     }
     assert result.report.criteria_snapshot == {
@@ -184,15 +185,15 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         assert rows_by_well["10401_ЗБС"][count_index] == 1
         assert rows_by_well["10401_ЗБС"][lnd_index] == "Да"
         assert rows_by_well["10401_ЗБС"][downhole_index] == "Да"
-        assert rows_by_well["10405"][headers.index("Пласт")] == "ПК19+20"
-        assert rows_by_well["10405"][count_index] == 0
+        assert rows_by_well["10405"][headers.index("Пласт")] == "ПК19"
+        assert rows_by_well["10405"][count_index] == 8
         assert rows_by_well["10306"][count_index] == 0
         assert any(
             issue.code == "GDI_UNCONFIRMED_LIFECYCLE_RECORDS" and issue.well_id == "10306"
             for issue in result.report.issues
         )
         zero_gdi_rows = [row for row in rows_by_well.values() if row[count_index] == 0]
-        assert len(zero_gdi_rows) == 4
+        assert len(zero_gdi_rows) == 1
         for row in zero_gdi_rows:
             launch = row[launch_index].date()
             expected_duration = (date(2026, 10, 2) - launch).days / 365
@@ -204,10 +205,10 @@ def test_real_bundle_update(tmp_path: Path) -> None:
             assert row[lnd_index] is None
             assert row[downhole_index] is None
             assert row[productivity_index] is None
-        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 2
+        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 1
         assert sum(row[cl_previous_index] is not None for row in zero_gdi_rows) == 1
-        assert sum(row[gdm_index] is not None for row in zero_gdi_rows) == 1
-        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 4
+        assert sum(row[gdm_index] is not None for row in zero_gdi_rows) == 0
+        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 1
     finally:
         workbook.close()
     with ZipFile(output) as archive:

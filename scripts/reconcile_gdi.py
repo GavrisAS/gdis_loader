@@ -23,7 +23,8 @@ from gdis_loader.domain.models import (
     SourcePaths,
     WellEventKind,
 )
-from gdis_loader.matching.lifecycle import resolve_lifecycle_stage
+from gdis_loader.matching.current_plast import resolve_current_plast
+from gdis_loader.matching.lifecycle import attach_active_fund_branches, resolve_lifecycle_stage
 from gdis_loader.matching.matcher import GdiIndex, match_fund_well
 from gdis_loader.matching.normalize import normalize_field_name
 from gdis_loader.readers.fund import read_fund
@@ -129,11 +130,17 @@ def reconcile(
         {name: count for name, count in lifecycle_counts.items() if name.startswith("current_")}
     )
 
-    for well in eligible:
-        initial = resolve_lifecycle_stage(well, None, history_result.histories)
-        match = match_fund_well(well, direct_index, history_result.histories)
+    for well in attach_active_fund_branches(eligible):
+        current = resolve_current_plast(well, direct_index, history_result.histories)
+        if current.ambiguous:
+            metrics["eligible_with_ambiguous_gdi_match"] += 1
+            continue
+        well = current.well
+        histories = current.histories
+        initial = resolve_lifecycle_stage(well, None, histories)
+        match = match_fund_well(well, direct_index, histories)
         resolution = (
-            resolve_lifecycle_stage(well, match.record, history_result.histories)
+            resolve_lifecycle_stage(well, match.record, histories)
             if match.record is not None
             else initial
         )
@@ -156,7 +163,7 @@ def reconcile(
         current_raw: list[Any] = []
         current_deduplicated: list[Any] = []
         for record in root_records:
-            record_stage = resolve_lifecycle_stage(well, record, history_result.histories)
+            record_stage = resolve_lifecycle_stage(well, record, histories)
             is_current = (
                 record_stage.stage == stage
                 and record_stage.issue is None
@@ -182,7 +189,7 @@ def reconcile(
             if item.base_well_id == well.base_well_id and item.gdi_kind in _VALID_KINDS
         )
         for record in dedup_root:
-            record_stage = resolve_lifecycle_stage(well, record, history_result.histories)
+            record_stage = resolve_lifecycle_stage(well, record, histories)
             if (
                 record_stage.stage == stage
                 and record_stage.issue is None

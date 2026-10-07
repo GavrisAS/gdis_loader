@@ -13,14 +13,12 @@ canonical field name, а у части well identities нет однозначн
 подтвердит безопасное правило assignment, reader можно расширить. До этого не
 переносить rate через совпадение номера между месторождениями.
 
-## Временное толкование fallback ГДМ
+## Historical ГДМ window — closed in v0.22
 
-`fallback_max_age_days=365` означает максимальную разницу между датой самой
-свежей relevant строки текущих field/well/lifecycle/plast и датой выбранной более
-старой Delta. Это помечено в коде и отчёте как
-`PROJECT_INTERPRETATION_PENDING_FUTURE_CONFIRMATION`; значение работает сейчас и
-не блокирует релиз. Будущая корректировка меняет только это числовое значение,
-если заказчик подтвердит иной интервал.
+Новое требование заказчика заменило временное окно365: default730 elapsed days
+включительно от calculation date для любого выбранного Δ в current history/plast.
+731 дней исключено; explicit пользовательские окна сохраняются. Детальный
+контракт: [CUSTOMER_DECISIONS.md](CUSTOMER_DECISIONS.md).
 
 ## Иные исходные неоднозначности
 
@@ -42,5 +40,7 @@ quality issues источника, а не основание выбирать �
 
 Underscore plast mismatch Пырейного — parser defect, устранен общей grammar;
 нового business decision не требует. 10306 остается нерешенным source-quality
-вопросом выше. Конфликты 10304/10404/10503 не разрешаются автоматически.
+вопросом выше. В v0.19 конфликты 10304/10404/10503 не разрешались автоматически. В v0.22
+новый authoritative Summary plast contract устраняет Fund/Base plast conflicts
+при подтверждённой текущей истории; произвольное lifecycle assignment запрещено.
 Multi-field current state: [REAL_DATA_DELTA_v0.19.md](REAL_DATA_DELTA_v0.19.md).

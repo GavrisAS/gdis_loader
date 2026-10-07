@@ -1,14 +1,14 @@
 calculator_template_version = 2
 formula_model = "weighted_geometric_active_mask"
-status = "candidate"
-canonical = false
+status = "accepted"
+canonical = true
 storage = "B: separate GitHub Release assets; also tracked in Git"
-loader_baseline = "v0.20"
-loader_release_target = "v0.21"
+loader_baseline = "v0.21"
+loader_release_target = "v0.22"
 baseline_commit = "2ffd13c791072d2bc05d8321b61c4fce636ee32f"
 capacity = 1000
-automated_acceptance = "PASS: uv sync --locked; make check; 500 tests"
-native_excel_acceptance = "PENDING"
+automated_acceptance = "PASS: v0.22 uv sync --locked; make check; 516 tests; template bytes preserved"
+native_excel_acceptance = "PASS: user confirmation in v0.22 task, 2026-10-07; exact v0.21 bytes retained"
 
 [source]
 sha256 = "bb046cc365749a546d1bbe141165b08a664ba427ab9493b678ddce008fc85c6a"

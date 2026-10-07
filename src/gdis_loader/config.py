@@ -41,7 +41,7 @@ class CriteriaConfig:
     chlorine_delta_min_mg_dm3: float = 1000.0
     downhole_depth_threshold_m: float = 0.0
     gdm_abs_delta_threshold: float = 5.0
-    gdm_fallback_max_age_days: int = 365
+    gdm_fallback_max_age_days: int = 730
     gas_rate_working_day_min_rate: float = 0.0
 
     def __post_init__(self) -> None:

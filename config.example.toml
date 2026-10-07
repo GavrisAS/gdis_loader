@@ -26,7 +26,8 @@ depth_threshold_m = 0.0
 
 [criteria.gdm]
 abs_delta_threshold = 5.0
-fallback_max_age_days = 365
+# Inclusive age of any selected Delta from calculation date; explicit old values are retained.
+fallback_max_age_days = 730
 
 [criteria.gas_rate]
 working_day_min_rate = 0.0

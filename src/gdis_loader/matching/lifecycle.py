@@ -88,7 +88,8 @@ def attach_active_fund_branches(wells: tuple[FundWell, ...]) -> tuple[FundWell, 
             well,
             active_zbs_identities=tuple(
                 sorted(
-                    {
+                    set(well.active_zbs_identities)
+                    | {
                         other.target_well_id
                         for other in wells
                         if other.is_rating_eligible

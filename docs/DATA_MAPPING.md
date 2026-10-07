@@ -23,7 +23,7 @@ field. В `Данные` не добавляется колонка местор
 | Снижение продуктивности | условно | Last two valid current GDI rows with numeric `a`; delta strictly greater than configured `min_increase` → Да, otherwise Нет. Default 0. Missing pair blank. |
 | Рост хлора | условно | Current Cl strictly over configured threshold and strict increase over previous Cl. Defaults 2000 and 1000 mg/dm³. Missing pair blank. |
 | Cl текущий / предыдущий | условно | Latest two LHA points in current history. Duplicate metric/timestamp uses maximum finite numeric value; otherwise source blanks remain blank. |
-| Проблемы ГДМ | условно | Latest relevant valid Delta, with previous valid fallback up to configured age. `abs(Delta) > threshold` → Да, otherwise Нет; missing selected Delta blank. |
+| Проблемы ГДМ | условно | Newest finite Delta in canonical current Summary GDI plast/history; inclusive age ≤ 730 days from calculation date by default (explicit config retained). `abs(Delta) > threshold` → Да, otherwise Нет; missing selected Delta blank. |
 | ЛНД | условно | Existing confirmed tri-state rule: Да when reliability is low or RFP says no; Нет only when both values are present/recognized and positive condition is false; otherwise blank. |
 | Последний АДД / Не проведен АДД | пусто | Deferred to structural calculator migration. |
 | Продолжительность без ГДИ | условно | From latest valid GDI; if none, from effective launch. Actual days / 365. |

@@ -156,15 +156,37 @@ numeric Delta, включая отрицательное и `0.0`, valid; blank,
 error, NaN/inf — invalid.
 
 Сначала ограничить selected field/current lifecycle/current normalized plast;
-затем выбрать самую свежую строку с valid Delta. Если у самой свежей relevant
-строки Delta missing/invalid, разрешён ближайший предыдущий valid Delta, если его
-возраст относительно самой свежей строки не больше `fallback_max_age_days`
-(default 365). Все типы исследований разрешены. `abs(delta) > threshold` — `Да`,
-иначе `Нет`; default threshold 5. Missing selected value — blank.
+затем выбрать самую свежую строку с finite numeric Delta не позже даты расчёта.
+Если новые значения invalid, искать назад. Возраст **любого** выбранного значения
+относительно calculation date должен быть `0 <= age_days <= fallback_max_age_days`.
+Default v0.22 — **730 дней**, граница включена (731 исключено). Это elapsed-day
+window, а не три календарных года: даты 2024 допустимы только внутри окна.
+Сохранённое explicit значение (включая 365) не мигрируется; missing key получает 730.
+Все типы исследований разрешены. `abs(delta) > threshold` — `Да`, иначе `Нет`;
+default threshold 5. Missing selected value — blank. Δ разных дат не вычитаются.
+Provenance показывает выбранную cell, research date, latest/fallback и возраст
+от calculation date. AutoFilter/hidden rows не ограничивают reader.
 
-Окно 365 дней — `PROJECT_INTERPRETATION_PENDING_FUTURE_CONFIRMATION`; сейчас это
-рабочая трактовка и не blocker реализации. Provenance показывает выбранную cell,
-research date, latest/fallback и возраст fallback.
+## Authoritative current plast — v0.22
+
+После определения current identity/history по field, root, suffix/ordinal и
+подтверждённым dated boundaries authoritative plast — последняя валидная
+Сводная ГДИ **в этой истории** до calculation cutoff. Fund object/plast constraint
+не участвует в первоначальном выборе этого stage. Temporal assignment сохраняет
+existing identity, separate ГС/МЗС, ordinal и unresolved-boundary checks.
+Равнодатные разные canonical plasts блокируют все plast-sensitive поля.
+Локальная копия существующего WellStage получает выбранный plast; она общая для
+ГДИ/count, ЛХА и ГДМ. Нормализация exact, без fuzzy equivalence.
+
+Если safe Summary candidate не найден (нет confirmed stage, нет valid current
+GDI, нет dated/field/plast key), используется прежний conservative Fund/Base
+контракт, включая отказ при неоднозначности. Этот путь отмечен
+`SUMMARY_GDI_CURRENT_PLAST_NOT_FOUND`; произвольный пласт не назначается.
+Selection/ambiguity отмечены `SUMMARY_GDI_CURRENT_PLAST_SELECTED` /
+`SUMMARY_GDI_CURRENT_PLAST_AMBIGUOUS`; provenance «Текущий пласт» сохраняет
+Fund hint, выбранный пласт и overridden. ГДМ группирует причины
+`GDM_DIFFERENT_PLAST_REJECTED`, `GDM_DIFFERENT_HISTORY_REJECTED` по target,
+а no-data/stale window и selected date доступны в прежнем report contract.
 
 Если для качественного признака inputs недостаточно, target field остаётся blank,
 а не `Нет`. По подтверждённому бизнес-правилу `μi` должен быть `0`, а criterion

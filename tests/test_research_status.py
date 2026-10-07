@@ -111,3 +111,23 @@ def test_reader_retains_formula_without_cached_value_as_unknown(tmp_path: Path) 
     assert formula_record.delta_formula_without_cache
     assert formula_record.delta_value is None
     assert any(issue.code == "GDM_DELTA_FORMULA_CACHE_MISSING" for issue in issues)
+
+
+def test_historical_rows_are_independent_of_filter_and_hidden_state(tmp_path: Path) -> None:
+    from openpyxl import load_workbook
+
+    path = tmp_path / "filtered.xlsx"
+    _make_status(path)
+    workbook = load_workbook(path)
+    sheet = workbook["АР_таблица_БЛУ"]
+    sheet["D6"] = datetime(2024, 8, 1)
+    sheet["J6"] = 0
+    sheet.auto_filter.ref = "A5:J12"
+    sheet.auto_filter.add_filter_column(3, ["2026"])
+    sheet.row_dimensions[6].hidden = True
+    workbook.save(path)
+    workbook.close()
+    records, _ = read_research_status(path, "БЛУ")
+    assert records[0].study_date is not None
+    assert records[0].study_date.year == 2024
+    assert records[0].delta_value == 0

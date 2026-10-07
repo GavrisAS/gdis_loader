@@ -27,6 +27,7 @@ from gdis_loader.domain.models import (
     GdiRecord,
     IssueSeverity,
     LoadReport,
+    MatchResult,
     MatchStatus,
     ResearchStatusRecord,
     SourceLocation,
@@ -39,8 +40,10 @@ from gdis_loader.domain.models import (
 )
 from gdis_loader.excel.template_capabilities import detect_template_capabilities
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
+from gdis_loader.matching.current_plast import resolve_current_plast
 from gdis_loader.matching.lifecycle import (
     LifecycleResolution,
+    attach_active_fund_branches,
     resolve_lifecycle_stage,
 )
 from gdis_loader.matching.matcher import GdiIndex, match_all
@@ -617,7 +620,7 @@ def _status_candidates_for_target(
 ) -> tuple[tuple[ResearchStatusRecord, ...], tuple[DiagnosticIssue, ...]]:
     """Match GDM rows conservatively and retain partial-date/plast ambiguity."""
 
-    if fund_well.base_well_id is None:
+    if fund_well.base_well_id is None or lifecycle_stage is None:
         return (), ()
     result: list[ResearchStatusRecord] = []
     issue_groups: dict[str, tuple[str, list[SourceLocation]]] = {}
@@ -653,14 +656,19 @@ def _status_candidates_for_target(
                     (lifecycle_stage.source_location,),
                 )
             continue
-        if lifecycle_stage is None:
-            if (
-                record.target_well_id == target_well_id
-                and record.normalized_plast == normalized_plast
-            ):
-                result.append(record)
-            continue
         assignment = resolve_lifecycle_stage(fund_well, record, histories)
+        if record.normalized_plast != normalized_plast:
+            add_issue(
+                "GDM_DIFFERENT_PLAST_REJECTED",
+                "Статус ГДМ исключён: пласт отличается от текущего пласта Сводной ГДИ.",
+                record,
+            )
+        elif assignment.stage != lifecycle_stage:
+            add_issue(
+                "GDM_DIFFERENT_HISTORY_REJECTED",
+                "Статус ГДМ исключён: нет подтверждённого assignment в текущую историю.",
+                record,
+            )
         if assignment.stage == lifecycle_stage and record.normalized_plast == normalized_plast:
             result.append(record)
         elif assignment.issue is not None:
@@ -786,8 +794,37 @@ def _build_target_rows(
     target_field = normalize_field_name(report.target_field)
     scoped_wells = tuple(well for well in fund.wells if well.normalized_field == target_field)
     eligible_wells = tuple(well for well in scoped_wells if well.is_rating_eligible)
-    matches, match_issues = match_all(eligible_wells, gdi_index, histories)
-    _append_issues(report, match_issues)
+    source_histories = histories
+    prepared_matches: list[MatchResult] = []
+    local_histories: list[tuple[WellHistory, ...]] = []
+    for well in attach_active_fund_branches(eligible_wells):
+        current = resolve_current_plast(well, gdi_index, source_histories)
+        _append_issues(report, (current.issue,))
+        _append_field_provenance(
+            report,
+            well.target_well_id,
+            "Текущий пласт",
+            current.issue.locations,
+            decision=current.issue.code,
+            fund_plast=well.object_plast_hint,
+            history_plast=current.original_history_plast,
+            current_plast=current.well.object_plast_hint,
+            overridden=current.well.object_plast_hint != well.object_plast_hint,
+        )
+        local_histories.append(() if current.ambiguous else current.histories)
+        if current.ambiguous:
+            prepared_matches.append(
+                MatchResult(
+                    status=MatchStatus.AMBIGUOUS,
+                    fund_well=current.well,
+                    explanation=current.issue.message,
+                )
+            )
+        else:
+            resolved, match_issues = match_all((current.well,), gdi_index, current.histories)
+            prepared_matches.extend(resolved)
+            _append_issues(report, match_issues)
+    matches = tuple(prepared_matches)
     report.fund_total_source = len(fund.wells)
     report.target_field_fund_total = len(scoped_wells)
     report.fund_total = report.fund_total_source
@@ -806,7 +843,7 @@ def _build_target_rows(
     }
     target_rows: list[TargetRow] = []
     target_identity_evidence: list[tuple[TargetRow, FundWell, GdiRecord]] = []
-    for match in matches:
+    for match, histories in zip(matches, local_histories, strict=True):
         fund_well = match.fund_well
         state = _target_state(fund_well)
         if match.status is MatchStatus.MATCHED and match.record is not None:
@@ -1360,7 +1397,11 @@ def _build_target_rows(
             if gdm_candidates:
                 report.gdm_rows_per_target[source_identity] = len(gdm_candidates)
             report.gdm_target_candidate_rows += len(problem_candidates)
-            gdm_selection = select_gdm_delta(gdm_candidates, criteria.gdm_fallback_max_age_days)
+            gdm_selection = select_gdm_delta(
+                gdm_candidates,
+                criteria.gdm_fallback_max_age_days,
+                reference_date=calculation_date or report.calculation_date or fund_well.fund_date,
+            )
             gdm_value: str | None = None
             if gdm_selection.record is not None:
                 selected_delta = gdm_selection.record
@@ -1555,7 +1596,7 @@ def _build_target_rows(
                     locations,
                     calculation_date=operation_date.isoformat()
                     if field_name.startswith("Продолжительность")
-                    or field_name == "Удельное количество ГДИ"
+                    or field_name in {"Удельное количество ГДИ", "Проблемы ГДМ"}
                     else None,
                     **details,
                 )
@@ -1885,7 +1926,11 @@ def _build_target_rows(
                 report.gdm_rows_per_target[
                     source_identity or target_identity or fund_well.raw_display
                 ] = len(gdm_candidates)
-            selection = select_gdm_delta(gdm_candidates, criteria.gdm_fallback_max_age_days)
+            selection = select_gdm_delta(
+                gdm_candidates,
+                criteria.gdm_fallback_max_age_days,
+                reference_date=calculation_date or report.calculation_date or fund_well.fund_date,
+            )
             if selection.record is not None:
                 assert selection.record.delta_value is not None
                 is_problem = gdm_problem(
@@ -1900,6 +1945,24 @@ def _build_target_rows(
                     target_identity,
                     "Проблемы ГДМ",
                     selection.record.locations,
+                    calculation_date=operation_date.isoformat(),
+                    selected_delta_cell=selection.record.delta_cell,
+                    selected_research_date=(
+                        effective_date(selection.record.study_date).isoformat()
+                        if selection.record.study_date is not None
+                        else None
+                    ),
+                    selected_source_partial_date=(
+                        selection.record.study_date.to_dict()
+                        if selection.record.study_date is not None
+                        else None
+                    ),
+                    latest_relevant_date=(
+                        effective_date(selection.latest_relevant.study_date).isoformat()
+                        if selection.latest_relevant is not None
+                        and selection.latest_relevant.study_date is not None
+                        else None
+                    ),
                     selection="fallback" if selection.fallback else "latest",
                     age_days=selection.age_days,
                     delta=selection.record.delta_value,
@@ -1907,6 +1970,7 @@ def _build_target_rows(
                 )
             else:
                 report.gdm_blank += 1
+                report.gdm_stale_fallback_rejected += int(selection.stale_age_days is not None)
                 _append_issues(
                     report,
                     (

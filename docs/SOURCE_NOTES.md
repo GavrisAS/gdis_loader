@@ -63,7 +63,30 @@
   per-row `abs(Delta)>5` candidate threshold.
 - Target selection сначала ограничивает field/current lifecycle/current
   normalized plast; все research kinds допустимы. Междатный Delta trend не
-  рассчитывается. Fallback window 365 дней — project interpretation, не blocker.
+  рассчитывается. Окно v0.22: 730 дней включительно от calculation date, для любого выбранного Δ.
+
+### Updated source audited for v0.22 (2026-10-07)
+
+SHA-256: `a898ea4cd2e41d3e2dec91fd9685bba763bc8e22415022a0e74c0a78e950f1b0`.
+Semantic columns: well A, plast B, kind C, study date D; Delta J in БЛУ,
+I in ПЛУ/ХЛУ. Headers are merged across rows2–4; dates/years are in row values,
+not separate year columns. The reader retains source precision and defaults partial
+dates by the established customer rule. Undated/header remnants cannot be assigned
+to a lifecycle and are excluded from selection.
+
+| Used sheet | Parsed rows | Finite Delta | Dated years / row counts | Delta formulas |
+|---|---:|---:|---|---:|
+| АР_таблица_БЛУ | 769 | 515 | 2021:2, 2022:159, 2023:216, 2024:171, 2025:144, 2026:57 | 517 |
+| АР_таблица_ПЛУ | 53 | 10 | 2022:8, 2023:15, 2024:21, 2025:7 | 10 |
+| АР_таблица_ХЛУ | 75 | 59 | 2022:13, 2023:17, 2024:22, 2025:21 | 59 |
+
+There are no Delta formulas without cached results. Two БЛУ formula results are
+invalid; missing/dash/text/error values remain unknown. Other formulas are present
+outside Delta. Several plasts per source identity occur for28/1/3 wells respectively;
+ЗБС/ЗБС2, annotated ЗБС, ГС and ПВЛГ labels are present. AutoFilters remain;
+no hidden rows in the updated sheets. Merged data cells are retained as sparse
+source values, never filled across identities. БЛУ has inflated max_column16383;
+the semantic reader limits its scan and reads only the detected required columns.
 
 ## База ЛХА и суточный рапорт
 

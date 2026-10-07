@@ -170,4 +170,5 @@ def test_current_pvlg_crosscheck_counts_roots_and_excludes_old_zbs_identity() ->
     assert counts["current_pvlg_identities"] == 3
     assert counts["current_pvlg_rows"] == 3
     assert counts["gdi_crosschecked_current_lifecycle_rows"] == 3
-    assert counts["ambiguous_current_lifecycle_rows"] == 4
+    assert counts["ambiguous_current_lifecycle_rows"] == 1
+    assert counts["resolved_current_lifecycle_rows"] == 3

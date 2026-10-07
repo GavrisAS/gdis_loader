@@ -143,7 +143,7 @@ def test_pvlg_source_suffix_keeps_gdm_lookup_on_pvlg_history() -> None:
     assert display_identity == "22"
     assert lookup_identity == "22_ПВЛГ"
     assert selected == (pvlg_status, root_only_status)
-    assert not issues
+    assert {issue.code for issue in issues} == {"GDM_DIFFERENT_HISTORY_REJECTED"}
 
 
 def test_explicit_gdm_ordinal_is_not_blocked_by_newer_sibling() -> None:
@@ -303,3 +303,47 @@ def test_10201_annotated_gdm_resolves_zbs3_and_inherited_pvlg() -> None:
         )
         assert candidates == (expected,)
         assert select_gdm_delta(candidates, fallback_max_age_days=365).record == expected
+
+
+def test_delta_cannot_be_selected_without_confirmed_current_history() -> None:
+    fund = FundWell(
+        "22",
+        "22",
+        "Береговое",
+        "береговое",
+        "ПК1",
+        FundCategory.PRODUCING,
+        date(2026, 8, 1),
+        3,
+        "A",
+    )
+    row = _status("22", "ПК1", "ИД", date(2026, 1, 1), 6.0, 10)
+    selected, _ = _status_candidates_for_target(fund, "22", "ПК1", None, (row,), ())
+    assert selected == ()
+
+
+def test_newer_numeric_delta_from_previous_explicit_branch_is_rejected() -> None:
+    first = _stage(WellEventKind.ZBS, "22_ЗБС", date(2022, 1, 1), 1, "ПК1")
+    second = _stage(WellEventKind.ZBS, "22_ЗБС2", date(2024, 1, 1), 2, "ПК1")
+    history = WellHistory("Береговое", "22", "22", (), (first, second))
+    fund = FundWell(
+        "22_ЗБС2",
+        "22",
+        "Береговое",
+        "береговое",
+        "ПК1",
+        FundCategory.PRODUCING,
+        date(2026, 8, 1),
+        3,
+        "A",
+        target_well_id="22_ЗБС2",
+        object_plast_hint="ПК1",
+    )
+    current = _status("22_ЗБС2", "ПК1", "ИД", date(2025, 8, 1), 0.0, 10)
+    previous = _status("22_ЗБС", "ПК1", "ИД", date(2026, 1, 1), 100.0, 11)
+    rows, issues = _status_candidates_for_target(
+        fund, "22_ЗБС2", "ПК1", second, (previous, current), (history,)
+    )
+    assert rows == (current,)
+    assert any(i.code == "GDM_DIFFERENT_HISTORY_REJECTED" for i in issues)
+    assert select_gdm_delta(rows, 730, reference_date=date(2026, 8, 1)).record == current
