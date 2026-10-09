@@ -34,11 +34,17 @@ def detect_template_capabilities(path: Path) -> CalculatorTemplateCapabilities:
                 return CalculatorTemplateCapabilities()
             capacity = next(iter(capacities.values()))
             workbook = ET.fromstring(archive.read("xl/workbook.xml"))
-            marker = any(
-                e.get("name") == "GDIS_TEMPLATE_VERSION" and e.text == "2" for e in workbook.iter()
+            version = next(
+                (
+                    int(e.text or "0")
+                    for e in workbook.iter()
+                    if e.get("name") == "GDIS_TEMPLATE_VERSION"
+                ),
+                1,
             )
+            marker = version in {2, 3}
             return CalculatorTemplateCapabilities(
-                schema_version=2 if marker else 1,
+                schema_version=version,
                 calculation_capacity=capacity,
                 supports_missing_exclusion=marker,
                 supports_removed_criteria_model=marker,

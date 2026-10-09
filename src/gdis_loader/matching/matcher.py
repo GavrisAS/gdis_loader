@@ -20,7 +20,7 @@ from gdis_loader.domain.models import (
 from gdis_loader.matching.lifecycle import attach_active_fund_branches, resolve_lifecycle_stage
 from gdis_loader.matching.normalize import normalize_field_name, normalize_well_id
 
-RATING_GDI_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
+RATING_GDI_KINDS = frozenset(kind for kind in GdiKind if kind.valid)
 
 
 class GdiIndex:
@@ -30,7 +30,8 @@ class GdiIndex:
         self._calculation_date = calculation_date
         grouped: defaultdict[str, list[GdiRecord]] = defaultdict(list)
         by_root: defaultdict[str, list[GdiRecord]] = defaultdict(list)
-        for record in records:
+        self.records = tuple(records)
+        for record in self.records:
             if record.gdi_kind not in RATING_GDI_KINDS:
                 continue
             target_id = record.target_well_id or (

@@ -20,3 +20,12 @@ def test_release_job_is_gated_by_version_job() -> None:
     assert "if: needs.version.outputs.should_release == 'true'" in workflow
     assert 'git tag "$TAG" "$TARGET_SHA"' in workflow
     assert 'gh release create "$TAG"' in workflow
+
+
+def test_candidate_release_requires_linux_and_windows_and_marks_prerelease() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "needs: [version, build, linux-checks]" in workflow
+    assert "release_flags+=(--prerelease)" in workflow
+    assert 'm["canonical"]' in workflow
+    assert "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx" in workflow
+    assert "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx" in workflow

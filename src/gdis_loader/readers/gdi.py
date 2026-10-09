@@ -244,6 +244,19 @@ def read_gdi(path: Path) -> tuple[tuple[GdiRecord, ...], tuple[DiagnosticIssue, 
                     )
                 )
             depth_raw = row_value(values, columns, "depth")
+            if depth_raw is not None and as_text(depth_raw) and parse_number(depth_raw) is None:
+                issues.append(
+                    DiagnosticIssue(
+                        code="GDI_DEPTH_INVALID",
+                        severity=IssueSeverity.WARNING,
+                        message="Некорректная глубина записи не подтверждает глубинные датчики.",
+                        source="gdi",
+                        well_id=base_id,
+                        locations=(
+                            cell_location(source_file, GDI_SHEET, row_number, columns["depth"]),
+                        ),
+                    )
+                )
             productivity_a_raw = (
                 values[productivity_a_column]
                 if productivity_a_column is not None and productivity_a_column < len(values)

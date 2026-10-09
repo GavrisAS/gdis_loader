@@ -5,11 +5,11 @@ from datetime import datetime
 import pytest
 
 from gdis_loader.config import CriteriaConfig
-from gdis_loader.domain.models import DatePrecision, GdiKind, GdiRecord, PartialDate
+from gdis_loader.domain.models import GdiKind, GdiRecord
 from gdis_loader.transforms.aggregates import (
     GdiCountBounds,
     chlorine_growth,
-    count_gdi_since_launch,
+    count_reconciled_gdi,
     insufficient_gdi_from_bounds,
     mean_working_day_rate,
     productivity_decline,
@@ -40,7 +40,6 @@ def _record(
 
 
 def test_gdi_count_uses_only_approved_kinds_and_keeps_id_kvd_as_one_row() -> None:
-    launch = PartialDate(2023, 5, None, DatePrecision.MONTH)
     records = (
         _record(datetime(2023, 4, 10), row=1),
         _record(datetime(2023, 5, 10), GdiKind.ID_KVD, row=2),
@@ -49,20 +48,19 @@ def test_gdi_count_uses_only_approved_kinds_and_keeps_id_kvd_as_one_row() -> Non
         _record(datetime(2023, 8, 10), GdiKind.UNKNOWN, row=5),
     )
 
-    bounds = count_gdi_since_launch(records, launch)
+    bounds = count_reconciled_gdi(records)
 
-    assert bounds.definite_count == 2
-    assert bounds.possible_count == 2
-    assert bounds.exact_count == 2
+    assert bounds.definite_count == 3
+    assert bounds.possible_count == 3
+    assert bounds.exact_count == 3
     assert len(bounds.ambiguous_records) == 0
     assert insufficient_gdi_from_bounds(bounds, 2) is False
 
 
-@pytest.mark.parametrize(("count", "expected_insufficient"), [(0, True), (1, True), (2, False)])
-def test_exact_launch_date_counts_only_valid_research_after_launch(
+@pytest.mark.parametrize(("count", "expected_insufficient"), [(0, True), (1, False), (2, False)])
+def test_aggregation_does_not_reapply_launch_cutoff(
     count: int, expected_insufficient: bool
 ) -> None:
-    launch = PartialDate(2023, 5, 10, DatePrecision.DAY)
     records = (
         _record(datetime(2023, 5, 9), row=1),
         *(
@@ -73,9 +71,9 @@ def test_exact_launch_date_counts_only_valid_research_after_launch(
         _record(datetime(2023, 6, 16), GdiKind.UNKNOWN, row=9),
     )
 
-    bounds = count_gdi_since_launch(records, launch)
+    bounds = count_reconciled_gdi(records)
 
-    assert bounds.exact_count == count
+    assert bounds.exact_count == count + 1
     assert insufficient_gdi_from_bounds(bounds, 2) is expected_insufficient
 
 

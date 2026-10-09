@@ -30,12 +30,14 @@ def classify_gdi_kind(raw_value: object) -> GdiKind:
         return GdiKind.UNKNOWN
     text = unicodedata.normalize("NFKC", str(raw_value)).upper().strip().replace("Ё", "Е")
     text = re.sub(r"\s*([+_])\s*", r"\1", text)
-    if text.startswith("ИД+КВД"):
+    if text.startswith(("ИД+КВД", "КВД+ИД")):
         return GdiKind.ID_KVD
     if text.startswith("ИД"):
         return GdiKind.ID
     if text.startswith("КВД"):
         return GdiKind.KVD
+    if text.startswith("КСД"):
+        return GdiKind.KSD
     if "ОСВОЕНИЕ" in text or _PRESSURE_ONLY.search(text) is not None or text.startswith("СТАТИК"):
         return GdiKind.EXCLUDED
     return GdiKind.UNKNOWN

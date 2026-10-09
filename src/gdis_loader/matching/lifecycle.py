@@ -157,6 +157,41 @@ def _issue(
     )
 
 
+def _unique_prelaunch_stage(
+    well: FundWell, record: GdiRecord | ResearchStatusRecord, history: WellHistory
+) -> LifecycleResolution:
+    """Permit launch disagreement only for a unique identity/plast branch.
+
+    Root labels cannot jump a lifecycle boundary. An explicit ZBS can precede
+    its Base launch only after the preceding confirmed history started and
+    before any successor with that same display identity. No day tolerance.
+    """
+    if not isinstance(record, GdiRecord) or record.study_date is None:
+        return LifecycleResolution(None)
+    identity = _record_identity(record, well)
+    parsed = normalize_well_id(identity)
+    if parsed.recognized_variant not in {None, "ЗБС", "ГС", "МЗС"}:
+        return LifecycleResolution(None)
+    stages = tuple(
+        s
+        for s in history.stages
+        if s.target_well_id == identity and s.plast == record.normalized_plast
+    )
+    if len(stages) != 1:
+        return LifecycleResolution(None)
+    selected = stages[0]
+    if record.study_date.date() >= effective_calendar_date(selected.started_at):
+        return LifecycleResolution(None)
+    if parsed.recognized_variant != "ЗБС":
+        return LifecycleResolution(selected if len(history.stages) == 1 else None)
+    previous = tuple(s for s in history.stages if s.stage_sequence < selected.stage_sequence)
+    if not previous:
+        return LifecycleResolution(selected if len(history.stages) == 1 else None)
+    if record.study_date.date() < max(effective_calendar_date(s.started_at) for s in previous):
+        return LifecycleResolution(None)
+    return LifecycleResolution(selected)
+
+
 def _assign_unsuffixed_record_by_timeline(
     fund_well: FundWell,
     record: GdiRecord | ResearchStatusRecord,
@@ -192,7 +227,7 @@ def _assign_unsuffixed_record_by_timeline(
         stage for stage in history.stages if study_day >= effective_calendar_date(stage.started_at)
     )
     if not preceding:
-        return LifecycleResolution(None)
+        return _unique_prelaunch_stage(fund_well, record, history)
     latest = tuple(
         stage
         for stage in preceding
@@ -555,7 +590,7 @@ def resolve_lifecycle_stage(
             )
         )
     if not preceding:
-        return LifecycleResolution(None)
+        return _unique_prelaunch_stage(fund_well, record, history)
     latest_date = max(effective_calendar_date(stage.started_at) for stage in preceding)
     latest = tuple(
         stage for stage in preceding if effective_calendar_date(stage.started_at) == latest_date

@@ -32,9 +32,9 @@ def _make_calculator(
     for column, header in enumerate(headers, 1):
         data.cell(6, column, header)
     for row in range(7, 9):
-        for column in range(1, 27):
+        for column in range(1, len(TARGET_FIELDS) + 1):
             data.cell(row, column, f"stale-{row}-{column}")
-    table = Table(displayName="tblData", ref="A6:Z8")
+    table = Table(displayName="tblData", ref="A6:Y8")
     table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
     data.add_table(table)
     if outside_row is not None:
@@ -77,7 +77,7 @@ def test_writer_uses_named_headers_clears_old_rows_and_preserves_package(tmp_pat
 
     assert result.rows_written == 2
     assert sha256(source.read_bytes()).hexdigest() == source_hash
-    assert _table_ref(output) == "A6:Z8"
+    assert _table_ref(output) == "A6:Y8"
     after = _target_entries(output)
     changed = {name for name in before if before[name] != after[name]}
     assert set(result.changed_entries) == changed
@@ -86,10 +86,16 @@ def test_writer_uses_named_headers_clears_old_rows_and_preserves_package(tmp_pat
     workbook = load_workbook(output, read_only=True, data_only=True)
     try:
         worksheet = workbook["Данные"]
-        header = next(worksheet.iter_rows(min_row=6, max_row=6, max_col=26, values_only=True))
+        header = next(
+            worksheet.iter_rows(min_row=6, max_row=6, max_col=len(TARGET_FIELDS), values_only=True)
+        )
         positions = {name: index for index, name in enumerate(header)}
-        first = next(worksheet.iter_rows(min_row=7, max_row=7, max_col=26, values_only=True))
-        second = next(worksheet.iter_rows(min_row=8, max_row=8, max_col=26, values_only=True))
+        first = next(
+            worksheet.iter_rows(min_row=7, max_row=7, max_col=len(TARGET_FIELDS), values_only=True)
+        )
+        second = next(
+            worksheet.iter_rows(min_row=8, max_row=8, max_col=len(TARGET_FIELDS), values_only=True)
+        )
         assert first[positions["Скважина"]] == "11_ЗБС"
         assert first[positions["Cl текущий"]] == 12.5
         assert first[positions["ВГФ текущий"]] == 0
@@ -110,7 +116,7 @@ def test_writer_expands_table_over_100_rows_only_on_target_sheet(tmp_path: Path)
 
     assert result.rows_written == 101
     assert "CALCULATOR_FORMULA_CAPACITY_UNKNOWN" in result.warnings
-    assert _table_ref(output) == "A6:Z107"
+    assert _table_ref(output) == "A6:Y107"
     after = _target_entries(output)
     changed = set(result.changed_entries)
     assert all(before[name] == after[name] for name in before if name not in changed)

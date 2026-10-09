@@ -51,6 +51,20 @@ class GdiKind(StrEnum):
     ID = "ID"
     ID_KVD = "ID_KVD"
     KVD = "KVD"
+    KSD = "KSD"
+
+    @property
+    def valid(self) -> bool:
+        return self in {self.ID, self.ID_KVD, self.KVD, self.KSD}
+
+    @property
+    def has_id(self) -> bool:
+        return self in {self.ID, self.ID_KVD}
+
+    @property
+    def has_pressure(self) -> bool:
+        return self in {self.KVD, self.KSD, self.ID_KVD}
+
     EXCLUDED = "EXCLUDED"
     UNKNOWN = "UNKNOWN"
 
@@ -76,7 +90,6 @@ TARGET_FIELDS: tuple[str, ...] = (
     "Дата запуска",
     "Количество ГДИ",
     "Глубинные датчики",
-    "Расходомер",
     "ГТМ",
     "Недостаточно ГДИС",
     "Снижение продуктивности",
@@ -99,7 +112,6 @@ TARGET_FIELDS: tuple[str, ...] = (
 )
 
 INTENTIONALLY_BLANK_FIELDS: tuple[str, ...] = (
-    "Расходомер",
     "Последний АДД",
     "Не проведен АДД",
     "Техническая возможность",
@@ -525,7 +537,7 @@ class MatchResult:
 
 @dataclass(frozen=True, slots=True)
 class TargetRow:
-    """The complete 26-field target row, with only approved values populated."""
+    """The complete 25-field target row, with only approved values populated."""
 
     well: CellValue = None
     plast: CellValue = None
@@ -533,7 +545,6 @@ class TargetRow:
     launch_date: CellValue = None
     gdi_count: CellValue = None
     downhole_sensors: CellValue = None
-    flowmeter: CellValue = None
     gtm: CellValue = None
     insufficient_gdi: CellValue = None
     productivity_decline: CellValue = None
@@ -564,7 +575,6 @@ class TargetRow:
             self.launch_date,
             self.gdi_count,
             self.downhole_sensors,
-            self.flowmeter,
             self.gtm,
             self.insufficient_gdi,
             self.productivity_decline,
@@ -635,6 +645,9 @@ class LoadReport:
     gdi_exact_duplicates_collapsed: int = 0
     gdi_nonvalid_labels: dict[str, int] = field(default_factory=dict)
     gdi_pre_launch_excluded: int = 0
+    gdi_pre_launch_included: int = 0
+    lnd_previous_fallbacks: int = 0
+    gdi_reconciliation: list[dict[str, Any]] = field(default_factory=list)
     gdi_kind_unknown: int = 0
     gdi_count_filled: int = 0
     insufficient_gdi_yes: int = 0

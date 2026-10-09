@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 
 from gdis_loader.config import CriteriaConfig
-from gdis_loader.domain.dates import effective_date
-from gdis_loader.domain.models import GdiKind, GdiRecord, PartialDate
-
-_VALID_GDI_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
+from gdis_loader.domain.models import GdiRecord
 
 
 @dataclass(frozen=True, slots=True)
 class GdiCountBounds:
-    """Definite and possible valid GDI counts after a launch date."""
+    """Definite and possible counts in a reconciled current history."""
 
     definite_count: int
     possible_count: int
@@ -26,31 +23,14 @@ class GdiCountBounds:
         return self.definite_count if not self.ambiguous_records else None
 
 
-def _study_after_launch(study_date: datetime, launch: PartialDate) -> bool | None:
-    """Compare against the agreed effective date for DAY, MONTH, or YEAR."""
+def count_reconciled_gdi(records: tuple[GdiRecord, ...]) -> GdiCountBounds:
+    """Count valid, dated rows already assigned to current identity/history/plast.
 
-    return study_date.date() >= effective_date(launch)
-
-
-def count_gdi_since_launch(records: tuple[GdiRecord, ...], launch: PartialDate) -> GdiCountBounds:
-    """Count valid GDI records after launch or return bounds for partial dates."""
-
-    definite: list[GdiRecord] = []
-    ambiguous: list[GdiRecord] = []
-    for record in records:
-        if record.gdi_kind not in _VALID_GDI_KINDS or record.study_date is None:
-            continue
-        relation = _study_after_launch(record.study_date, launch)
-        if relation is True:
-            definite.append(record)
-        elif relation is None:
-            ambiguous.append(record)
-    return GdiCountBounds(
-        definite_count=len(definite),
-        possible_count=len(definite) + len(ambiguous),
-        definite_records=tuple(definite),
-        ambiguous_records=tuple(ambiguous),
-    )
+    Base launch is chronology evidence; applicability is decided by lifecycle
+    reconciliation before this pure aggregation. Combined rows count once.
+    """
+    valid = tuple(r for r in records if r.gdi_kind.valid and r.study_date is not None)
+    return GdiCountBounds(len(valid), len(valid), valid, ())
 
 
 def insufficient_gdi_from_bounds(bounds: GdiCountBounds, min_count: int) -> bool | None:

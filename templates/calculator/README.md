@@ -1,19 +1,20 @@
-# Calculator assets (tracked, immutable baseline)
+# Calculator assets — v0.23 candidate
 
-Delivery option B: both templates, SHA256SUMS.txt and CALCULATOR_TEMPLATE_VERSION.toml
-are separate GitHub Release assets alongside the Windows loader ZIP (v0.22).
-Both XLSX files also survive a clean clone.
-`SHA256SUMS.txt` uses repository-root paths; run `sha256sum -c` from root.
+Structural v3 removes only «Расходомер» from Данные/tblData (25 columns).
+Capacity remains 1000 in calculation/rating tables. Formulas, λ/rank, charts,
+styles, protection, criteria participation and auto-recalculation are preserved.
+Runtime changes only Данные/tblData in a new output workbook.
 
-Version2 was accepted by the user in native Microsoft Excel (confirmed 2026-10-07).
-The v0.22 delivery retains the exact v0.21 template bytes. Capacity1000; model
-weighted_geometric_active_mask. Runtime never modifies template formulas.
-Archive version1 is exactly the pinned pre-structural v0.19 calculator, capacity100.
-Do not regenerate or modify archive. Choose it in the same loader for rollback.
+Status: **AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE**, canonical=false.
+Microsoft Excel acceptance is required before v3 becomes canonical.
+See docs/CALCULATOR_NATIVE_EXCEL_SMOKE.md and docs/AUDIT_v0.23.md.
 
-Version/hash metadata: docs/CALCULATOR_TEMPLATE_VERSION.toml.
+Previous accepted v2 is retained byte-for-byte; its native Microsoft Excel PASS
+was confirmed by the user on 2026-10-07. Archive v1 is retained for rollback.
+No acceptance of v2 is claimed as acceptance of v3.
 
-Windows: download both XLSX assets into any folder, compare `Get-FileHash
--Algorithm SHA256 <filename>` with SHA256SUMS.txt, then select the required
-calculator through Обзор in the loader. The checksum file uses repository-root
-paths; match downloaded assets by basename. No Python is needed on Windows.
+Delivery: v3 candidate, accepted v2, archive v1, SHA256SUMS.txt and version metadata
+are separate release assets alongside the Windows standalone folder ZIP.
+No Python is required on the target PC. Select the desired workbook via Обзор.
+SHA256SUMS.txt uses repository-root paths; downloaded files can be checked by
+basename with Get-FileHash -Algorithm SHA256. Sources/output workbooks are not assets.

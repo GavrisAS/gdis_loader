@@ -404,23 +404,16 @@ def _verify_output(output: Path, rows: tuple[TargetRow, ...]) -> None:
         workbook = load_workbook(output, read_only=True, data_only=True, keep_links=False)
     try:
         worksheet = workbook["Данные"]
-        header_values = next(
-            worksheet.iter_rows(min_row=6, max_row=6, max_col=len(TARGET_FIELDS), values_only=True)
-        )
+        header_values = next(worksheet.iter_rows(min_row=6, max_row=6, values_only=True))
         header_map = {
             normalized_header(value): index
             for index, value in enumerate(header_values)
             if value is not None
         }
-        for row_number, expected in enumerate(rows, 7):
-            actual = next(
-                worksheet.iter_rows(
-                    min_row=row_number,
-                    max_row=row_number,
-                    max_col=len(TARGET_FIELDS),
-                    values_only=True,
-                )
-            )
+        actual_rows = worksheet.iter_rows(
+            min_row=7, max_row=6 + len(rows), max_col=len(header_values), values_only=True
+        )
+        for row_number, (expected, actual) in enumerate(zip(rows, actual_rows, strict=True), 7):
             for name, expected_value in expected.as_mapping().items():
                 index = header_map.get(normalized_header(name))
                 if index is None:

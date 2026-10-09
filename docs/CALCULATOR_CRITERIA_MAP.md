@@ -19,8 +19,7 @@ criterion | source in Данные | current use / weight | μ location | transf
 Высокодебитные скважины | Дебит | Нет; 0.1 | Критерии P20:119 | ТОП % | numeric weighted geometric; missing blocks | same transform; unknown μ=0, mask=0 | available, disabled
 Достаточность ГДИС с учетом стационарного оснащения | Количество ГДИ + Глубинные датчики | Нет; 0 | Критерии Q20:119 | Количество + флаг | numeric weighted geometric; missing blocks | same transform; unknown μ=0, mask=0 | available, disabled
 
-Расходомер | Расходомер | unused | none | none | none | input retained; no downstream criterion | removed
 Последний АДД | Последний АДД | unused | none | none | none | input retained; no downstream criterion | removed
 Manual μ | Manual μ | unused; generic MANUAL_MU branch only | no configured slot | none | no override | input retained; excluded from active model | unused
 
-Расходомер and Последний АДД have no configured calculation slots; remove no formulas for them. Не проведен АДД=row28 and Техническая возможность=row34 must have labels/fields/codes cleared and μ/helper slots disabled. Keep all 26 input columns. Manual μ is unused, retained input only. Thresholds from loader are not copied into settings.
+Последний АДД has no configured calculation slots; it remains retained. Расходомер was removed in v3 without removing formulas. Не проведен АДД=row28 and Техническая возможность=row34 must have labels/fields/codes cleared and μ/helper slots disabled. v3 keeps 25 input columns; only Расходомер is physically deleted. Manual μ is unused, retained input only. Thresholds from loader are not copied into settings.

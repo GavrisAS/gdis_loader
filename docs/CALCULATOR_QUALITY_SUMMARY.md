@@ -1,24 +1,14 @@
-# Final verification summary
+# Current verification — v0.23 / structural v3
 
-Python 3.14.7 / uv locked environment. Required quality run: uv sync --locked
-and make check (ruff check, ruff format --check, ty check, pytest).
-Final full run status: PASS; 500 passed in 464.34s, no failures.
-One openpyxl warning came from read-only-in-purpose inspection of x14 conditional
-formatting; no workbook round-trip/save was performed. OOXML retains extensions.
+Local gates: `uv sync --locked`, `make check` (Ruff, format, ty, pytest).
+Current complete evidence: [AUDIT_v0.23.md](AUDIT_v0.23.md) and the final review bundle.
+The regression suite grows from 516 to 569 cases; none is removed.
 
-Structural suite: 40 passed, including deterministic repeated migration,
-exact eleven-entry allowlist, unchanged non-target parts, input schema26,
-1000-row capacity, emitted-formula golden cases and all-unknown rank guard.
-Read-only capabilities suite: 15 passed; old100 and v2 1000; boundary writer
-warnings; fixed settings locked with no dropdown; explicit general inputs unlocked;
-unknown capacity and template-aware diagnostic.
-Three-field v2 and rollback production updates: PASS; only sheet3.xml/table2.xml
-changed, source templates unchanged. No production workbook included in review.
+Structural v3 exact five-part gate preserves all formula sheets, λ/rank, charts,
+styles, protection, calculation capacity 1000 and auto-recalculation. Writer
+checks v1/v2/v3 by named headers, including Manual μ in legacy workbooks.
+Accepted v2 SHA-256 remains unchanged. No calcChain is added.
 
-Native Excel and real Excel golden evaluation: PENDING, not substituted by tests.
-
-Corrective positive/negative editability tests: 20 passed. Actual cellXfs
-protection and sheetProtection verified; retired cells locked and rows hidden;
-clones preserve visual attributes. Repeated local builds are byte-deterministic. Cross-platform rebuild equals
-tracked OOXML payloads; ZIP compression bytes may differ between zlib builds.
-Protection fix adds no formula changes.
+v2 native Excel PASS was confirmed 2026-10-07. v3 requires new acceptance:
+NATIVE EXCEL PENDING / CANDIDATE, canonical=false. Automated OOXML tests do
+not replace Microsoft Excel. Production sources and filled output books stay local.

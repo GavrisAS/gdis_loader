@@ -52,8 +52,8 @@ source cell: это может включить well в sigmoid, а multiplier z
 
 В будущей миграции проверить и обновить sigmoid participation, поведение
 `Расчет!J`, capacity ranges `Расчет`/`Рейтинг` и любые связанные formula refs.
-Физические столбцы `Расходомер`, АДД и `Техническая возможность` пока также
-сохраняются и остаются blank по текущему scope.
+В историческом v0.19 scope все эти столбцы сохранялись. В текущем v3 удалён
+только Расходомер; АДД и Техническая возможность сохранены.
 
 ## Current corrective baseline v0.19
 
@@ -75,6 +75,15 @@ loader его не вызывает. Исходник и rollback сохране
 [acceptance gates](CALCULATOR_STRUCTURAL_ACCEPTANCE.md).
 
 Migration implemented offline; final automated checks are recorded in acceptance.
-Template version 2 remains candidate until native Excel PASS. Durable tracked
+Template version 2 has native Excel PASS confirmed 2026-10-07. Durable tracked
 assets are under `templates/calculator/`; rollback does not require code rollback.
 Runtime reads capabilities and writes only Данные/tblData.
+
+## Structural v3 / loader v0.23
+
+v2 remains immutable and accepted. v3 deletes only the unused Расходомер data
+column; all other retired inputs and the v2 formula layer are preserved.
+Migration: `scripts/migrate_calculator_v3.py`; exact five-part OOXML gate and
+cell-by-cell shift preservation: `tests/test_template_v3.py`.
+v3 is CANDIDATE, canonical=false until new native Excel acceptance.
+Current status and checklist: CALCULATOR_NATIVE_EXCEL_SMOKE.md.

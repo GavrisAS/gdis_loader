@@ -21,9 +21,9 @@ from gdis_loader.domain.models import (
     GdiKind,
     MatchStatus,
     SourcePaths,
-    WellEventKind,
 )
 from gdis_loader.matching.current_plast import resolve_current_plast
+from gdis_loader.matching.gdi_history import current_gdi_history
 from gdis_loader.matching.lifecycle import attach_active_fund_branches, resolve_lifecycle_stage
 from gdis_loader.matching.matcher import GdiIndex, match_fund_well
 from gdis_loader.matching.normalize import normalize_field_name
@@ -36,8 +36,8 @@ from gdis_loader.validation.reconciliation import (
     current_lifecycle_counts,
 )
 
-_VALID_KINDS = frozenset({GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD})
-_CUSTOMER_WELLS = frozenset({"12", "13", "21", "22"})
+_VALID_KINDS = frozenset(kind for kind in GdiKind if kind.valid)
+_CUSTOMER_WELLS = frozenset({"12", "13", "21", "22", "10306", "10405"})
 
 
 def _application_counts(path: Path | None) -> dict[str, int | None]:
@@ -144,7 +144,7 @@ def reconcile(
             if match.record is not None
             else initial
         )
-        stage = resolution.stage
+        stage = resolution.stage if match.status is not MatchStatus.AMBIGUOUS else None
         root_records = tuple(
             item
             for item in scoped_raw
@@ -160,54 +160,12 @@ def reconcile(
         elif match.status is MatchStatus.NO_GDI:
             metrics["current_no_gdi_identities"] += 1
         launch = effective_date(stage.started_at)
-        current_raw: list[Any] = []
-        current_deduplicated: list[Any] = []
-        for record in root_records:
-            record_stage = resolve_lifecycle_stage(well, record, histories)
-            is_current = (
-                record_stage.stage == stage
-                and record_stage.issue is None
-                and record.normalized_plast == stage.plast
-            )
-            if (
-                not is_current
-                and record.study_date is not None
-                and record.study_date.date() < launch
-                and record.normalized_plast == stage.plast
-            ):
-                source_identity = record.target_well_id or well.base_well_id
-                stage_identity = stage.target_well_id or stage.physical_root
-                is_current = (
-                    stage.event_kind is WellEventKind.INITIAL
-                    and source_identity == stage.physical_root
-                ) or (stage.event_kind is WellEventKind.ZBS and source_identity == stage_identity)
-            if is_current:
-                current_raw.append(record)
-        dedup_root = tuple(
-            item
-            for item in deduplicated
-            if item.base_well_id == well.base_well_id and item.gdi_kind in _VALID_KINDS
+        current_raw = current_gdi_history(
+            well, root_records, histories, stage, stage.plast, calculation_date=operation_date
         )
-        for record in dedup_root:
-            record_stage = resolve_lifecycle_stage(well, record, histories)
-            if (
-                record_stage.stage == stage
-                and record_stage.issue is None
-                and record.normalized_plast == stage.plast
-            ):
-                current_deduplicated.append(record)
-            elif (
-                record.study_date is not None
-                and record.study_date.date() < launch
-                and record.normalized_plast == stage.plast
-            ):
-                source_identity = record.target_well_id or well.base_well_id
-                stage_identity = stage.target_well_id or stage.physical_root
-                if (
-                    stage.event_kind is WellEventKind.INITIAL
-                    and source_identity == stage.physical_root
-                ) or (stage.event_kind is WellEventKind.ZBS and source_identity == stage_identity):
-                    current_deduplicated.append(record)
+        current_deduplicated = current_gdi_history(
+            well, deduplicated, histories, stage, stage.plast, calculation_date=operation_date
+        )
 
         raw_before = sum(
             record.study_date is not None and record.study_date.date() < launch
@@ -231,10 +189,11 @@ def reconcile(
         metrics["deduplicated_valid_rows_current_lifecycle_plast"] += len(current_deduplicated)
         metrics["deduplicated_valid_rows_before_launch"] += deduplicated_before
         metrics["deduplicated_valid_rows_after_launch"] += deduplicated_after
+        metrics["total_counted_gdi"] += len(current_deduplicated)
         application_count = application.get(
             stage.target_well_id or well.target_well_id or well.raw_display
         )
-        application_state = application_count_state(application_count, deduplicated_after)
+        application_state = application_count_state(application_count, len(current_deduplicated))
         if application_state == "mismatch":
             metrics["application_count_mismatches"] += 1
 
@@ -269,7 +228,7 @@ def reconcile(
         "target_field": target_field,
         "calculation_date": operation_date.isoformat(),
         "reconciliation_method": (
-            "cross-check reconciliation using shared canonical business primitives"
+            "cross-check reconciled current-history count; launch is evidence"
         ),
         "source_rows": len(scoped_raw),
         "deduplicated_source_rows": len(deduplicated),

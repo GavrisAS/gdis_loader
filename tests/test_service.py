@@ -1251,7 +1251,7 @@ def test_lnd_positive_condition_succeeds_when_second_value_is_missing() -> None:
     assert report.lnd_unknown == 0
 
 
-def test_lnd_and_depth_unknowns_stay_blank_with_source_cells() -> None:
+def test_lnd_unknown_stays_blank_and_depth_without_evidence_is_no() -> None:
     fund_well = _fund_identity("Береговое")
     record = replace(
         _gdi_identity("Береговое"),
@@ -1274,18 +1274,16 @@ def test_lnd_and_depth_unknowns_stay_blank_with_source_cells() -> None:
     )
 
     assert rows[0].lnd is None
-    assert rows[0].downhole_sensors is None
+    assert rows[0].downhole_sensors == "Нет"
     assert report.lnd_unknown == 1
-    assert report.downhole_unknown == 1
+    assert report.downhole_no == 1
     lnd_issue = next(issue for issue in report.issues if issue.code == "LND_SOURCE_INCOMPLETE")
-    depth_issue = next(issue for issue in report.issues if issue.code == "GDI_DEPTH_UNKNOWN")
     assert lnd_issue.locations == (
         SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "AU100"),
         SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "AW100"),
     )
-    assert depth_issue.locations == (
-        SourceLocation("gdi.xlsx", "ГДИС_Сибнефтегаз в целом", "N100"),
-    )
+    depth_provenance = next(p for p in report.field_provenance if p["field"] == "Глубинные датчики")
+    assert any(loc["cell"] == "N100" for loc in depth_provenance["locations"])
 
 
 def test_month_precision_launch_is_defaulted_with_exact_provenance() -> None:

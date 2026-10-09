@@ -17,7 +17,7 @@ def _make_calculator(path: Path) -> None:
     worksheet.title = "Данные"
     for column, header in enumerate(TARGET_FIELDS, 1):
         worksheet.cell(6, column, header)
-    worksheet.add_table(Table(displayName="tblData", ref="A6:Z106"))
+    worksheet.add_table(Table(displayName="tblData", ref="A6:Y106"))
     workbook.save(path)
 
 

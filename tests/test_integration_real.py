@@ -75,11 +75,12 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdi_raw_record_count == 1832
     assert result.report.gdi_deduplicated_record_count == 1830
     assert result.report.gdi_exact_duplicates_collapsed == 2
-    assert result.report.gdi_pre_launch_excluded == 16
+    assert result.report.gdi_pre_launch_excluded == 0
+    assert result.report.gdi_pre_launch_included == 16
     # v0.22 Summary plast restores current-history GDI; golden counts are audited.
-    assert result.report.matched == 77
+    assert result.report.matched == 78
     assert result.report.ambiguous == 0
-    assert result.report.no_gdi == 1
+    assert result.report.no_gdi == 0
     assert result.report.debit_filled == 66
     assert result.report.debit_blank == 12
     assert result.report.debit_valid_day_count == 1580
@@ -88,7 +89,7 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.gdm_blank == 37
     assert result.report.gdm_fallback_selected == 11
     assert result.report.gdm_stale_fallback_rejected == 30
-    assert result.report.gdm_target_candidate_rows == 70
+    assert result.report.gdm_target_candidate_rows == 72
     expected_criteria = {
         "insufficient_gdi_min_count": 2,
         "productivity_min_increase": 0.0,
@@ -142,23 +143,18 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         launch_index = headers.index("Дата запуска")
         insufficient_index = headers.index("Недостаточно ГДИС")
         no_gdi_index = headers.index("Продолжительность без ГДИ")
-        no_id_index = headers.index("Продолжительность без ИД")
         no_kvd_index = headers.index("Продолжительность без КВД")
-        specific_index = headers.index("Удельное количество ГДИ")
         lnd_index = headers.index("ЛНД")
         downhole_index = headers.index("Глубинные датчики")
         productivity_index = headers.index("Снижение продуктивности")
-        cl_current_index = headers.index("Cl текущий")
-        cl_previous_index = headers.index("Cl предыдущий")
         gdm_index = headers.index("Проблемы ГДМ")
-        debit_index = headers.index("Дебит")
         rows_by_well = {
             str(row[well_index]): row
             for row in worksheet.iter_rows(min_row=7, values_only=True)
             if row[well_index] is not None
         }
         assert len(rows_by_well) == 78
-        expected_counts = {"12": 20, "13": 21, "21": 19, "22": 19}
+        expected_counts = {"12": 21, "13": 21, "21": 19, "22": 19}
         for well, expected_count in expected_counts.items():
             assert rows_by_well[well][count_index] == expected_count
         assert rows_by_well["12"][launch_index].date() == date(2008, 2, 1)
@@ -187,28 +183,35 @@ def test_real_bundle_update(tmp_path: Path) -> None:
         assert rows_by_well["10401_ЗБС"][downhole_index] == "Да"
         assert rows_by_well["10405"][headers.index("Пласт")] == "ПК19"
         assert rows_by_well["10405"][count_index] == 8
-        assert rows_by_well["10306"][count_index] == 0
+        assert rows_by_well["10306_ЗБС"][count_index] == 7
+        assert rows_by_well["10306_ЗБС"][headers.index("Пласт")] == "ПК17"
+        assert rows_by_well["10306_ЗБС"][launch_index].date() == date(2023, 12, 1)
         assert any(
-            issue.code == "GDI_UNCONFIRMED_LIFECYCLE_RECORDS" and issue.well_id == "10306"
+            issue.code == "SUMMARY_GDI_CURRENT_HISTORY_INFERRED" and issue.well_id == "10306"
             for issue in result.report.issues
         )
-        zero_gdi_rows = [row for row in rows_by_well.values() if row[count_index] == 0]
-        assert len(zero_gdi_rows) == 1
-        for row in zero_gdi_rows:
-            launch = row[launch_index].date()
-            expected_duration = (date(2026, 10, 2) - launch).days / 365
-            assert row[insufficient_index] == "Да"
-            assert row[no_gdi_index] == expected_duration
-            assert row[no_id_index] == expected_duration
-            assert row[no_kvd_index] == expected_duration
-            assert row[specific_index] is None
-            assert row[lnd_index] is None
-            assert row[downhole_index] is None
-            assert row[productivity_index] is None
-        assert sum(row[cl_current_index] is not None for row in zero_gdi_rows) == 1
-        assert sum(row[cl_previous_index] is not None for row in zero_gdi_rows) == 1
-        assert sum(row[gdm_index] is not None for row in zero_gdi_rows) == 0
-        assert sum(row[debit_index] is not None for row in zero_gdi_rows) == 1
+        controls = {
+            root: [
+                item
+                for item in result.report.gdi_reconciliation
+                if (item["canonical_well"] or "").split("_")[0] == root
+            ]
+            for root in ("10306", "10405")
+        }
+        assert {item["source_row"] for item in controls["10306"] if item["counted"]} == set(
+            range(1557, 1564)
+        )
+        assert {item["source_row"] for item in controls["10405"] if item["counted"]} == set(
+            range(1604, 1612)
+        )
+        assert {
+            item["source_row"]
+            for item in controls["10405"]
+            if item["exclusion_reason"] == "INVALID_TYPE"
+        } == {1612, 1613}
+        assert all(item["canonical_plast"] == "ПК17" for item in controls["10306"])
+        assert not any(item["launch_relation"] == "before" for item in controls["10405"])
+        assert result.report.lnd_previous_fallbacks == 23
     finally:
         workbook.close()
     with ZipFile(output) as archive:
@@ -353,7 +356,8 @@ def test_real_all_fields_update_and_ooxml(tmp_path: Path, field: str) -> None:
 
     output = tmp_path / f"{field}.xlsx"
     paths = SourcePaths(
-        calculator=REAL_FILES[0],
+        calculator=DATA_ROOT.parent
+        / "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx",
         fund=REAL_FILES[1],
         gdi=REAL_FILES[2],
         lha=REAL_FILES[3],
@@ -384,7 +388,7 @@ def test_real_all_fields_update_and_ooxml(tmp_path: Path, field: str) -> None:
         sheet_xml = generated.read("xl/worksheets/sheet3.xml").decode()
         table_xml = generated.read("xl/tables/table2.xml").decode()
     end = 6 + report.rows_written
-    assert f'ref="A6:Z{end}"' in table_xml
+    assert f'ref="A6:Y{end}"' in table_xml
     assert f'sqref="A7:A{end}"' in sheet_xml
     assert 'mc:Ignorable="x14ac"' in sheet_xml
     assert "xmlns:x14ac=" in sheet_xml
@@ -404,7 +408,7 @@ def test_real_all_fields_update_and_ooxml(tmp_path: Path, field: str) -> None:
         assert len(rows) == report.rows_written
         assert (
             sum(row["Количество ГДИ"] or 0 for row in rows.values())
-            == reconciliation["metrics"]["deduplicated_valid_rows_after_launch"]
+            == reconciliation["metrics"]["total_counted_gdi"]
         )
         # Exact customer counts are pinned only to the unchanged production bundle.
         import re
@@ -424,7 +428,7 @@ def test_real_all_fields_update_and_ooxml(tmp_path: Path, field: str) -> None:
             assert rows["22"]["Пласт"] == rows["62"]["Пласт"] == "ПК1"
         if set(expected_hashes) == set(actual_hashes) and field == "Береговое":
             assert report.rows_written == 78
-            for well, count in {"12": 20, "13": 21, "21": 19, "22": 19}.items():
+            for well, count in {"12": 21, "13": 21, "21": 19, "22": 19}.items():
                 assert rows[well]["Количество ГДИ"] == count
     finally:
         workbook.close()

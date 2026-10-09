@@ -72,3 +72,30 @@ def test_gdi_preserves_raw_type_classifies_unknown_and_keeps_depth_zero(tmp_path
     assert downhole_condition(records[1].depth_raw_value, 0.0) is None
     unknown = next(issue for issue in issues if issue.code == "GDI_KIND_UNKNOWN")
     assert unknown.locations[0].cell == "D2"
+
+
+def test_invalid_depth_has_exact_source_location(tmp_path: Path) -> None:
+    path = tmp_path / "ГДИ источник.xlsx"
+    _write_gdi(
+        path,
+        [
+            [
+                "Береговое",
+                11,
+                "ПК17-1",
+                "КСД",
+                datetime(2026, 1, 1),
+                "да",
+                "средняя",
+                None,
+                "не число",
+            ]
+        ],
+    )
+    records, issues = read_gdi(path)
+    assert records[0].normalized_plast == "ПК17"
+    assert records[0].depth_value is None
+    issue = next(i for i in issues if i.code == "GDI_DEPTH_INVALID")
+    assert issue.locations[0].file == str(path.resolve())
+    assert issue.locations[0].sheet == "ГДИС_Сибнефтегаз в целом"
+    assert issue.locations[0].cell == "I2"

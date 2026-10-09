@@ -41,6 +41,7 @@ from gdis_loader.domain.models import (
 from gdis_loader.excel.template_capabilities import detect_template_capabilities
 from gdis_loader.excel.writer import TargetWriteResult, write_target_rows
 from gdis_loader.matching.current_plast import resolve_current_plast
+from gdis_loader.matching.gdi_history import current_gdi_history
 from gdis_loader.matching.lifecycle import (
     LifecycleResolution,
     attach_active_fund_branches,
@@ -58,19 +59,19 @@ from gdis_loader.readers.well_history import FIELD_SHEETS, read_well_history
 from gdis_loader.source_manifest import build_source_manifest, criteria_snapshot
 from gdis_loader.transforms.aggregates import (
     chlorine_growth,
-    count_gdi_since_launch,
+    count_reconciled_gdi,
     duration_years,
     insufficient_gdi_from_bounds,
     mean_working_day_rate,
     productivity_decline,
 )
 from gdis_loader.transforms.gdi import collapse_exact_gdi_duplicates
+from gdis_loader.transforms.gdi_features import downhole_sources, lnd_source
 from gdis_loader.transforms.research_status import gdm_problem, select_gdm_delta
 from gdis_loader.transforms.rules import (
-    downhole_condition,
-    lnd_condition,
     specific_gdi_count,
 )
+from gdis_loader.validation.gdi_audit import audit_gdi_rows
 from gdis_loader.validation.sources import (
     ValidationResult,
     validate_inputs,
@@ -561,21 +562,8 @@ def _gdi_history_for_stage(
 ) -> tuple[GdiRecord, ...]:
     """Return valid rows on one resolved lifecycle stage and normalized plast."""
 
-    matching: list[GdiRecord] = []
-    for record in history_records:
-        if record.normalized_plast != normalized_plast:
-            continue
-        resolution = resolve_lifecycle_stage(fund_well, record, histories)
-        if selected_stage is not None:
-            if resolution.stage == selected_stage:
-                matching.append(record)
-        elif record.target_well_id == selected_identity:
-            matching.append(record)
-    return tuple(
-        sorted(
-            matching,
-            key=lambda record: (record.study_date or datetime.min, record.source_row),
-        )
+    return current_gdi_history(
+        fund_well, history_records, histories, selected_stage, normalized_plast, selected_identity
     )
 
 
@@ -591,7 +579,7 @@ def _prelaunch_gdi_records_for_stage(
     result: list[GdiRecord] = []
     for record in records:
         if (
-            record.gdi_kind not in {GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD}
+            record.gdi_kind not in {kind for kind in GdiKind if kind.valid}
             or record.normalized_plast != stage.plast
             or record.study_date is None
             or record.study_date.date() >= launch_day
@@ -845,6 +833,22 @@ def _build_target_rows(
     target_identity_evidence: list[tuple[TargetRow, FundWell, GdiRecord]] = []
     for match, histories in zip(matches, local_histories, strict=True):
         fund_well = match.fund_well
+        audit_stage = resolve_lifecycle_stage(fund_well, None, histories).stage
+        if match.status is MatchStatus.AMBIGUOUS:
+            audit_stage = None
+        audit_rows = audit_gdi_rows(
+            fund_well,
+            gdi_index.records,
+            histories,
+            audit_stage,
+            calculation_date or report.calculation_date or fund_well.fund_date,
+            criteria.downhole_depth_threshold_m,
+            tuple(report.issues),
+        )
+        report.gdi_reconciliation.extend(audit_rows)
+        report.gdi_pre_launch_included += sum(
+            row["counted"] and row["launch_relation"] == "before" for row in audit_rows
+        )
         state = _target_state(fund_well)
         if match.status is MatchStatus.MATCHED and match.record is not None:
             record = match.record
@@ -908,7 +912,7 @@ def _build_target_rows(
                     ),
                 )
             else:
-                count_bounds = count_gdi_since_launch(history_records, launch_partial)
+                count_bounds = count_reconciled_gdi(history_records)
                 gdi_count = count_bounds.exact_count
                 insufficient_value = insufficient_gdi_from_bounds(
                     count_bounds, criteria.insufficient_gdi_min_count
@@ -927,11 +931,15 @@ def _build_target_rows(
                     assert lifecycle.stage is not None
                     report.gdi_count_filled += 1
                     report.gdi_pre_launch_excluded += len(
-                        _prelaunch_gdi_records_for_stage(
-                            fund_well,
-                            gdi_index.history_for(fund_well),
-                            histories,
-                            lifecycle.stage,
+                        tuple(
+                            item
+                            for item in _prelaunch_gdi_records_for_stage(
+                                fund_well,
+                                gdi_index.history_for(fund_well),
+                                histories,
+                                lifecycle.stage,
+                            )
+                            if item not in history_records
                         )
                     )
                     row_provenance["Количество ГДИ"] = _unique_locations(
@@ -1068,7 +1076,8 @@ def _build_target_rows(
                     ),
                 )
 
-            lnd_value = lnd_condition(record.rfp_result, record.lnd_reliability)
+            selected_lnd, lnd_value, lnd_fallback = lnd_source(current_history)
+            report.lnd_previous_fallbacks += int(lnd_fallback)
             if lnd_value is None:
                 report.lnd_unknown += 1
                 _append_issues(
@@ -1090,49 +1099,34 @@ def _build_target_rows(
                 target_lnd = None
             else:
                 target_lnd = "Да" if lnd_value else "Нет"
-                row_provenance["ЛНД"] = _gdi_locations(record, "rfp_cell", "lnd_reliability_cell")
+                assert selected_lnd is not None
+                row_provenance["ЛНД"] = _gdi_locations(
+                    selected_lnd, "rfp_cell", "lnd_reliability_cell"
+                )
+                row_provenance_details["ЛНД"] = {
+                    "selection": "previous" if lnd_fallback else "latest"
+                }
                 if lnd_value:
                     report.lnd_true += 1
                 else:
                     report.lnd_false += 1
 
-            downhole_value = downhole_condition(
-                record.depth_raw_value, criteria.downhole_depth_threshold_m
+            operation_date = calculation_date or report.calculation_date or fund_well.fund_date
+            positive_depth = downhole_sources(
+                current_history, operation_date, criteria.downhole_depth_threshold_m
             )
-            if downhole_value is None:
-                report.downhole_unknown += 1
-                _append_issues(
-                    report,
-                    (
-                        DiagnosticIssue(
-                            code="GDI_DEPTH_UNKNOWN",
-                            severity=IssueSeverity.WARNING,
-                            message=(
-                                "Глубина записи отсутствует или не распознана; "
-                                "поле «Глубинные датчики» оставлено пустым."
-                            ),
-                            source="gdi",
-                            well_id=fund_well.base_well_id,
-                            locations=(
-                                SourceLocation(
-                                    file=record.source_file,
-                                    sheet=record.source_sheet,
-                                    cell=record.depth_cell,
-                                ),
-                            )
-                            if record.source_file and record.depth_cell
-                            else (),
-                        ),
-                    ),
+            downhole_cell = "Да" if positive_depth else "Нет"
+            row_provenance["Глубинные датчики"] = _unique_locations(
+                tuple(
+                    loc
+                    for item in current_history
+                    for loc in _gdi_locations(item, "date_cell", "depth_cell")
                 )
-                downhole_cell = None
+            )
+            if positive_depth:
+                report.downhole_yes += 1
             else:
-                downhole_cell = "Да" if downhole_value else "Нет"
-                row_provenance["Глубинные датчики"] = _gdi_locations(record, "depth_cell")
-                if downhole_value:
-                    report.downhole_yes += 1
-                else:
-                    report.downhole_no += 1
+                report.downhole_no += 1
             lha_values = (
                 lha_index.select(
                     base_well_id=fund_well.base_well_id or "",
@@ -1273,7 +1267,7 @@ def _build_target_rows(
                 (
                     item
                     for item in current_history
-                    if item.gdi_kind in {GdiKind.ID, GdiKind.ID_KVD} and item.study_date is not None
+                    if item.gdi_kind.has_id and item.study_date is not None
                 ),
                 key=lambda item: (item.study_date or datetime.min, item.source_row),
                 default=None,
@@ -1320,8 +1314,7 @@ def _build_target_rows(
                 (
                     item
                     for item in current_history
-                    if item.gdi_kind in {GdiKind.KVD, GdiKind.ID_KVD}
-                    and item.study_date is not None
+                    if item.gdi_kind.has_pressure and item.study_date is not None
                 ),
                 key=lambda item: (item.study_date or datetime.min, item.source_row),
                 default=None,
@@ -1642,18 +1635,22 @@ def _build_target_rows(
                 lifecycle.stage.plast,
                 fund_well.target_well_id,
             )
-            bounds = count_gdi_since_launch(stage_history, lifecycle.stage.started_at)
+            bounds = count_reconciled_gdi(stage_history)
             gdi_count = bounds.exact_count
             insufficient_value = insufficient_gdi_from_bounds(
                 bounds, criteria.insufficient_gdi_min_count
             )
             report.gdi_count_filled += 1
             report.gdi_pre_launch_excluded += len(
-                _prelaunch_gdi_records_for_stage(
-                    fund_well,
-                    gdi_index.history_for(fund_well),
-                    histories,
-                    lifecycle.stage,
+                tuple(
+                    item
+                    for item in _prelaunch_gdi_records_for_stage(
+                        fund_well,
+                        gdi_index.history_for(fund_well),
+                        histories,
+                        lifecycle.stage,
+                    )
+                    if item not in stage_history
                 )
             )
             if insufficient_value is True:
@@ -1700,7 +1697,7 @@ def _build_target_rows(
                 (
                     item
                     for item in stage_history
-                    if item.gdi_kind in {GdiKind.ID, GdiKind.ID_KVD} and item.study_date is not None
+                    if item.gdi_kind.has_id and item.study_date is not None
                 ),
                 key=lambda item: (item.study_date or datetime.min, item.source_row),
                 default=None,
@@ -1709,8 +1706,7 @@ def _build_target_rows(
                 (
                     item
                     for item in stage_history
-                    if item.gdi_kind in {GdiKind.KVD, GdiKind.ID_KVD}
-                    and item.study_date is not None
+                    if item.gdi_kind.has_pressure and item.study_date is not None
                 ),
                 key=lambda item: (item.study_date or datetime.min, item.source_row),
                 default=None,
@@ -2259,7 +2255,7 @@ def _prepare(
     report.gdi_raw_record_count = len(raw_scoped_gdi)
     raw_kind_counts: defaultdict[str, int] = defaultdict(int)
     nonvalid_labels: defaultdict[str, int] = defaultdict(int)
-    valid_kinds = {GdiKind.ID, GdiKind.ID_KVD, GdiKind.KVD}
+    valid_kinds = {kind for kind in GdiKind if kind.valid}
     for record in raw_scoped_gdi:
         raw_kind_counts[record.gdi_kind.value] += 1
         if record.gdi_kind not in valid_kinds:

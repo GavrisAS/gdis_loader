@@ -12,6 +12,7 @@ from gdis_loader.domain.models import (
 )
 from gdis_loader.matching.lifecycle import resolve_lifecycle_stage
 from gdis_loader.matching.matcher import GdiIndex
+from gdis_loader.matching.summary_history import supplement_summary_history
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,23 @@ def resolve_current_plast(
     boundary checks still run through the established lifecycle resolver.
     The resulting stage is copied locally, never written into a source workbook.
     """
+    histories, inferred, conflict = supplement_summary_history(
+        well, index.history_for(well), histories
+    )
+    if conflict:
+        return CurrentPlastResolution(
+            well,
+            histories,
+            DiagnosticIssue(
+                code="SUMMARY_GDI_HISTORY_AMBIGUOUS",
+                severity=IssueSeverity.WARNING,
+                message="Summary GDI не подтверждает единственную непротиворечивую ветку.",
+                source="gdi",
+                well_id=well.target_well_id,
+                locations=tuple(loc for r in index.history_for(well) for loc in r.locations),
+            ),
+            True,
+        )
     unconstrained = replace(well, object_name="", object_plast_hint=None)
     current = resolve_lifecycle_stage(unconstrained, None, histories)
     candidates = tuple(
@@ -89,7 +107,11 @@ def resolve_current_plast(
                 for history in histories
             )
             well = replace(well, object_name=plast or "", object_plast_hint=plast)
-            code = "SUMMARY_GDI_CURRENT_PLAST_SELECTED"
+            code = (
+                "SUMMARY_GDI_CURRENT_HISTORY_INFERRED"
+                if inferred
+                else "SUMMARY_GDI_CURRENT_PLAST_SELECTED"
+            )
             message = (
                 "Текущий пласт выбран из последней валидной Сводной ГДИ в подтверждённой истории."
             )

@@ -58,11 +58,11 @@ uv run gdis-loader
 ```
 
 CLI использует тот же application service, что и GUI. Примеры ниже используют
-structural v2 candidate для testing; native Excel acceptance ещё PENDING:
+structural v3 candidate; новый native Excel acceptance ещё PENDING (v2 принят):
 
 ```bash
 uv run gdis-loader-cli validate \
-  --calculator templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx \
+  --calculator templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx \
   --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
   --gdi "data/Сводная таблица ГДИ.xlsx" \
   --lha "data/База ЛХА_Итог!.xlsm" \
@@ -71,7 +71,7 @@ uv run gdis-loader-cli validate \
   --research-status "data/Статус исследований_2026.xlsx"
 
 uv run gdis-loader-cli update \
-  --calculator templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx \
+  --calculator templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx \
   --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
   --gdi "data/Сводная таблица ГДИ.xlsx" \
   --lha "data/База ЛХА_Итог!.xlsm" \
@@ -101,7 +101,7 @@ GUI сохраняет атомарно в `config.toml`; в PyInstaller-сбо�
 `Проблемы ГДМ` и средний `Дебит`. Числовые границы находятся в `config.toml`;
 GUI предоставляет модальное окно `Критерии…`. Для качественных признаков без
 достаточных исходных данных target cell остаётся пустой. `ГТМ = Нет` остаётся
-временным решением. Structural v2 подготовлен как отдельный candidate. Runtime расширяет только
+временным решением. Structural v2 принят; v3 подготовлен как отдельный candidate. Runtime расширяет только
 `Данные`/`tblData`; предупреждение использует фактическую емкость template.
 
 Управляемые критерии и defaults перечислены в
@@ -147,7 +147,7 @@ provenance (`file`, `sheet`, `cell`). В JSON это поле `locations`, а в
 итоговых значений Cl/ВГФ и не доказывает физическое отсутствие записей ЛХА:
 например, оно может включать строку с конфликтом одинакового timestamp.
 
-При превышении емкости template (old: 100, v2: 1000) summary и GUI показывают
+При превышении емкости template (old: 100, v2/v3: 1000) summary и GUI показывают
 предупреждение. Неизвестная емкость сообщается явно.
 
 `validate` не проверяет и не создаёт output path. Output extension, совпадение с
@@ -261,35 +261,28 @@ Strict runtime audit повторно проверяет все 7 sources и gen
 Structural μ/λ migration реализована offline; native Excel acceptance ожидается.
 
 
-## Structural template v2 candidate
+## Structural template v3 candidate — loader v0.23
 
-Tracked assets (вариант A):
-- `templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx`;
-- `templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx`.
+v3 удаляет только Расходомер из Данные/tblData. Остальные поля сохранены.
+Предыдущий v2 принят в native Excel 2026-10-07 и сохранён побайтово; его PASS
+не распространяется на v3. Capacity v2/v3 — 1000, archive v1 — 100.
+Runtime пишет только Данные/tblData; формулы и настройки не меняет.
 
-Exact hashes и размеры: [metadata](docs/CALCULATOR_TEMPLATE_VERSION.toml).
-Runtime изменяет только `Данные` и `tblData`. Capacity определяется read-only по
-расчетной и рейтинговой таблицам. Template v2: 1000, rollback: 100.
-Missing policy фиксирована; retired settings скрыты и перечислены как unused.
-Manual μ остается резервом без override.
-
-Статус: **AUTOMATED PASS / NATIVE EXCEL PENDING** после проверок этого pass.
-До native gate template остается candidate. Инструкции оператора и rollback:
-[Native smoke](docs/CALCULATOR_NATIVE_EXCEL_SMOKE.md).
-
-Восстановление после clean clone: templates уже находятся в Git. Проверить
-`sha256sum templates/calculator/*.xlsx templates/calculator/archive/*.xlsx`.
-Для rollback выбрать архивный workbook в том же loader; исходник не менять.
-Rebuild candidate в новый путь:
+Статус v3: **AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE**, canonical=false.
+[Отчёт v0.23](docs/AUDIT_v0.23.md), [native checklist](docs/CALCULATOR_NATIVE_EXCEL_SMOKE.md),
+[hash/version metadata](docs/CALCULATOR_TEMPLATE_VERSION.toml).
 
 ```bash
-uv run python scripts/migrate_calculator_template.py templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx /tmp/structural-v2.xlsx
-uv run python scripts/verify_calculator_template.py templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx data artifacts/calculator/final-three-fields
+sha256sum -c templates/calculator/SHA256SUMS.txt
+uv run python scripts/migrate_calculator_v3.py templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx /tmp/structural-v3.xlsx --diff /tmp/v3-diff.json
 ```
 
-Windows delivery (release v0.21): отдельные release assets рядом с
-`GDIS_DataLoader-v0.21-windows-x64.zip`: `GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx`,
-`GDIS_Rating_Calculator_v0.19_pre_structural.xlsx`, `SHA256SUMS.txt`,
-`CALCULATOR_TEMPLATE_VERSION.toml`. V2 остаётся candidate/testing до native PASS.
-Checksum paths соответствуют repository layout; для downloaded assets сравнить
-hash по имени файла или разместить их по указанным путям.
+Release v0.23 candidate предоставляет Windows standalone ZIP, v3, accepted v2,
+archive v1 и checksums отдельными assets. Исходники и production outputs не входят
+в release. Для rollback выбрать предыдущий workbook через Обзор.
+
+ГДИ: единый classifier принимает КВД, КСД, ИД, ИД+КВД и КВД+ИД; combined даёт +1.
+Count использует reconciled current history/plast, launch служит evidence.
+Downhole ищет положительную depth в inclusive трёхлетнем календарном окне.
+ЛНД при incomplete latest проверяет только immediate previous valid GDI.
+JSON load-report содержит общий per-source-row `gdi_reconciliation` для расследований.

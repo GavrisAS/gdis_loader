@@ -21,7 +21,7 @@
 - В `config.toml` допускаются только числовые критерии из schema приложения.
   `CriteriaConfig` — immutable snapshot на одну операцию; отчёт хранит значения,
   происхождение (`default`/`config`) и путь конфигурации.
-- Колонки `Расходомер`, `Последний АДД`, `Не проведен АДД`, `Техническая
+- Колонки `Последний АДД`, `Не проведен АДД`, `Техническая
   возможность`, `Manual μ` остаются пустыми. `ГТМ` пока заполняется временным
   значением `Нет`.
 
@@ -101,7 +101,7 @@ dash variants, извлекает основные номера и убирае�
 ## Классификация и количество ГДИ
 
 После NFKC, trim, case normalization и допустимой нормализации разделителей
-классифицировать только prefix, в следующем порядке: `ИД+КВД`, `ИД`, `КВД`.
+классифицировать только prefix: `ИД+КВД`/`КВД+ИД`, `ИД`, `КВД`, `КСД`.
 Всё после prefix — пояснение. Поэтому `ИД+КВД освоение`, `ИД+КВДсм НКТ`,
 `КВДстатика`, `ИД пояснение` валидны; `Освоение`, `Статика`, `Pст`, `Pпл`,
 `МЗС+миниКВД` сами по себе ГДИ не являются.
@@ -113,7 +113,7 @@ dash variants, извлекает основные номера и убирае�
 `a`, `b`, ЛНД/RFP и иных business values сохраняют отдельные исследования.
 
 `Количество ГДИ` — число дедуплицированных валидных исследований текущей
-lifecycle/plast history с effective date `>= launch`. До запуска, другая history,
+lifecycle/plast history. Launch — chronology evidence, не повторный hard cutoff. Другая history,
 иной актуальный пласт, invalid label и точные повторы не входят. `Недостаточно
 ГДИС`: `count < min_count -> Да`, иначе `Нет`; default `min_count=2`. Для
 unresolved identity поле остаётся blank.
@@ -135,8 +135,13 @@ Customer regression на Береговом: скв. 12 имеет один vali
   `Cl_current - Cl_previous > delta_min_mg_dm3`. Defaults `2000` и `1000`;
   missing inputs — blank. Для дублей metric/timestamp в LHA выбирается максимум
   valid numeric value.
-- Downhole: depth последнего valid GDI `> depth_threshold_m` — Да, иначе Нет;
-  default `0`. Missing/invalid — blank.
+- Downhole: хотя бы одна positive finite depth в valid current history/plast
+  за последние три календарных года — Да; иначе Нет при разрешённой истории ГДИ.
+  Окно `[calculation_date - 3 calendar years, calculation_date]` включительно;
+  Feb 29 -> Feb 28. Depth должна быть >0 и >configured threshold (default 0).
+  Текст/невалидная depth игнорируется с reader diagnostic.
+- ЛНД: прежняя формула, latest valid GDI; при невалидных/неполных inputs
+  только immediate previous valid GDI той же history/plast. Глубже не искать.
 - Duration without GDI: от последнего valid GDI; если его нет — от effective
   launch. Без ID — от последнего ID/ID_KVD, или от launch, если ID не было.
   Без KVD — от последнего KVD/ID_KVD, или от launch, если KVD не было.
@@ -191,8 +196,8 @@ Fund hint, выбранный пласт и overridden. ГДМ группиру�
 Если для качественного признака inputs недостаточно, target field остаётся blank,
 а не `Нет`. По подтверждённому бизнес-правилу `μi` должен быть `0`, а criterion
 должен быть исключён из итогового `λ`. В сохраненном исходном template v0.19
-этот gap остается. Отдельный structural template version2 candidate реализует
-μ=0 / exclusion; canonical switch ожидает native Excel acceptance. Подробности в
+этот gap остается. Принятый structural template v2 реализует μ=0 / exclusion (native PASS
+2026-10-07). Новый v3 удаляет только Расходомер и ожидает собственный native PASS. Подробности в
 [`STRUCTURAL_CALCULATOR_MIGRATION.md`](STRUCTURAL_CALCULATOR_MIGRATION.md).
 Loader runtime по-прежнему не изменяет формулы и остальные листы.
 
@@ -216,3 +221,22 @@ scope; suffix не выбирает ЗБС1. До первой ЗБС либо �
 Debit/GDM/LHA semantics сохраняются.
 
 Сверка production и aggregate inventory: [REAL_DATA_DELTA_v0.17.md](REAL_DATA_DELTA_v0.17.md).
+
+## Authoritative feedback v0.23
+
+Summary может подтвердить missing ЗБС marker у единственного initial Base completion:
+одна explicit ordinal-1 ветка, согласованный canonical plast и fund scope, без
+других active branches, неизвестных/конфликтующих markers и interleaved root rows.
+Base launch сохраняется. Ни dated, ни undated lifecycle boundary не заменяется.
+При конфликте — AMBIGUOUS. Старые root rows не становятся post-ZBS history.
+
+Pre-launch valid GDI допустимо для единственной initial identity/plast без
+другой lifecycle history либо для однозначного explicit ЗБС после preceding
+confirmed history start. Root-only запись не перепрыгивает lifecycle boundary.
+Нет произвольного tolerance; assignment общий для count, durations, LND и depth.
+
+КСД — pressure-study capability (как КВД для длительности без pressure study);
+combined имеет ID и pressure capabilities, даёт один count. Pст/Pпл по-прежнему excluded.
+Расходомер физически удалён только в отдельном structural v3; остальные retired
+поля сохранены. Runtime поддерживает старые templates по named headers, но
+не возвращает Расходомер в output model. Полный контракт: AUDIT_v0.23.md.

@@ -1,14 +1,14 @@
-calculator_template_version = 2
+calculator_template_version = 3
 formula_model = "weighted_geometric_active_mask"
-status = "accepted"
-canonical = true
+status = "AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE"
+canonical = false
 storage = "B: separate GitHub Release assets; also tracked in Git"
-loader_baseline = "v0.21"
-loader_release_target = "v0.22"
-baseline_commit = "2ffd13c791072d2bc05d8321b61c4fce636ee32f"
+loader_baseline = "v0.22"
+loader_release_target = "v0.23"
+baseline_commit = "3490441a13d6c36849754a404d13b1933e41c0ed"
 capacity = 1000
-automated_acceptance = "PASS: v0.22 uv sync --locked; make check; 516 tests; template bytes preserved"
-native_excel_acceptance = "PASS: user confirmation in v0.22 task, 2026-10-07; exact v0.21 bytes retained"
+automated_acceptance = "PASS: uv sync --locked; make check; 569 passed; exact OOXML five-part gate"
+native_excel_acceptance = "PENDING: structural v3 requires new human Microsoft Excel acceptance"
 
 [source]
 sha256 = "bb046cc365749a546d1bbe141165b08a664ba427ab9493b678ddce008fc85c6a"
@@ -23,8 +23,15 @@ sha256 = "bb046cc365749a546d1bbe141165b08a664ba427ab9493b678ddce008fc85c6a"
 byte_identical = true
 
 [candidate]
-path = "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx"
-size_bytes = 13705243
-sha256 = "645a3e5ba9303c42f441598e71fb7da261c9738789638cb5a0e7fceaf97d2578"
+path = "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx"
+size_bytes = 13705012
+sha256 = "6a7523fdbf524fd9b7f6709d0b3b95279641c706f958c36d388a41c23d610248"
 supports_missing_exclusion = true
 supports_removed_criteria_model = true
+
+[previous_accepted]
+version = 2
+canonical = true
+path = "templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx"
+sha256 = "645a3e5ba9303c42f441598e71fb7da261c9738789638cb5a0e7fceaf97d2578"
+native_excel_acceptance = "PASS: user confirmation 2026-10-07"
