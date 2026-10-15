@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 
 from gdis_loader.readers.daily import read_daily_report
@@ -22,9 +23,10 @@ def _book() -> Workbook:
     return book
 
 
-def test_direct_link_proves_field_date_and_leading_zero_identity() -> None:
+@pytest.mark.parametrize("address", ["AH8", "$AH8", "AH$8", "$AH$8"])
+def test_direct_link_proves_field_date_and_leading_zero_identity(address: str) -> None:
     contexts = day_contexts(_book())
-    proof = reference_evidence("='01'!$AH8", 1, "22", contexts, "daily.xlsm")
+    proof = reference_evidence(f"='01'!{address}", 1, "22", contexts, "daily.xlsm")
     assert proof is not None
     assert proof[0] == "Береговое"
     assert [p.cell for p in proof[1]] == ["A1", "A4", "D8", "AH8"]
@@ -142,3 +144,72 @@ def test_real_september_period_and_independent_cached_means() -> None:
         assert wrong_link.field_scope_invalid
     finally:
         book.close()
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "='01'!D8",
+        "='01'!AB8",
+        "='01'!AG8",
+        "='01'!ZZ8",
+        "='01'!AH9",
+        "='02'!AH8",
+        "='missing'!AH8",
+        '=INDIRECT("01!AH8")',
+        "='[external.xlsx]01'!AH8",
+        "='01'!AH8+0",
+    ],
+)
+def test_only_direct_ah_destination_can_prove_scope(formula: str) -> None:
+    assert reference_evidence(formula, 1, "22", day_contexts(_book()), "x") is None
+
+
+@pytest.mark.parametrize("column", ["AH", "D", "AB", "AG"])
+def test_reader_cached_reference_requires_ah(tmp_path: Path, column: str) -> None:
+    from datetime import date
+    from xml.etree import ElementTree as ET
+    from zipfile import ZipFile
+
+    from gdis_loader.domain.models import FundCategory, FundWell
+    from gdis_loader.service import _daily_record_for_target
+
+    book = _book()
+    telemetry = book.create_sheet("Добыча телеметрия")
+    telemetry.append(["ГСК", "СКВ.", 1])
+    telemetry.append([99, "22", f"='01'!{column}8"])
+    path = tmp_path / "cached.xlsm"
+    book.save(path)
+    with ZipFile(path) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    root = ET.fromstring(entries["xl/worksheets/sheet2.xml"])
+    value = root.find(".//s:c[@r='C2']/s:v", ns)
+    assert value is not None
+    value.text = "123"
+    entries["xl/worksheets/sheet2.xml"] = ET.tostring(root)
+    with ZipFile(path, "w") as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    rows, _ = read_daily_report(path)
+    assert rows[0].daily_values == (123.0,)
+    fund = FundWell(
+        raw_display="22",
+        base_well_id="22",
+        target_well_id="22",
+        field_name="Береговое",
+        normalized_field="береговое",
+        object_name="Береговое",
+        source_category=FundCategory.PRODUCING,
+        fund_date=date(2026, 9, 1),
+        source_row=1,
+        source_column="C",
+    )
+    selected, issue = _daily_record_for_target(fund, "22", (fund,), rows)
+    if column == "AH":
+        assert rows[0].field_evidence
+        assert selected == rows[0] and issue is None
+    else:
+        assert rows[0].raw_field_name is None
+        assert rows[0].field_evidence == ()
+        assert selected is None and issue == "DEBIT_SOURCE_FIELD_UNPROVEN"

@@ -45,15 +45,14 @@ The reader now verifies the dated sheet title, date/day agreement, direct
 formula destination, and normalized well identity on every day in the report
 month before assigning field scope. It filters to the selected field before
 resolving candidates. Physical root and target lifecycle identity remain
-separate: `71_ЗБС` and `113_ЗБС` resolve to source rows 32 and 31 (raw IDs 71
-and 113), while their current target identities remain suffixed. An unproven
-day link, unknown field marker, row-identity mismatch, or unresolved lifecycle
-does not assign a debit. No debit formula or threshold semantics changed.
+separate; confirmed branch histories retain their suffixed target identities.
+An unproven day link, unknown field marker, row-identity mismatch, or unresolved
+lifecycle does not assign a debit. No debit formula or threshold semantics changed.
 
-The fail-safe is observable in the report: telemetry `B108` identifies well
-`10703`, while `AF108` points to `30!AH114`; that daily row identifies `Р-83`
-at `30!D114` (and `30!AB114` is `=D114`). Because the target well does not
-match, the row remains field-unproven and cannot supply a debit.
+The corrective pass explicitly requires destination column `AH`, including
+absolute-address variants. Direct links to other columns cannot establish scope,
+even with a positive telemetry cache. Synthetic regressions cover this rejection.
+Production row identities and coordinates remain in the ignored private audit.
 
 ## September results
 
@@ -96,7 +95,8 @@ debits equal the arithmetic mean of numeric rates strictly above the existing
 threshold. Synthetic tests cover cross-field same-number selection, inherited
 section scope, unknown scope, leading zero normalization, lifecycle suffix,
 formula-cache missing behavior, date/identity mismatch, and row-order safety.
-The complete suite passes **581 tests** (569 before this fix; 12 new tests).
+The original preflight suite passed **581 tests** (569 before the September fix).
+Fresh AH corrective gates are recorded in [AH qualification](AUDIT_v0.24_AH.md).
 
 Structural v3 SHA-256 remains
 `6a7523fdbf524fd9b7f6709d0b3b95279641c706f958c36d388a41c23d610248`; v2 and

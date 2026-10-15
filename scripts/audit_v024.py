@@ -663,7 +663,7 @@ def render_audit(
             "",
             "## Regression, cross-field scope, and preservation",
             "",
-            "- The full v0.23 test count was 569; the v0.24 complete test run passes 581 tests. The 12 added tests cover dated scope, direct references, identity mismatch, selected-field precedence, unknown scope, lifecycle suffix, leading zero, formula-cache missing values, and order independence.",  # noqa: E501
+            "- The original v0.24 preflight passed 581 tests. Fresh AH corrective gate results are retained separately in ah-make-check.log; regression coverage includes dated scope, direct references, identity mismatch, selected-field precedence, unknown scope, lifecycle suffix, leading zero, formula-cache missing values, and order independence.",  # noqa: E501
             "- Same-number controls `22`, `62`, `101`, `321`, and `322` resolve only to the available Beregovoe report candidates. The synthetic cross-field test asserts that a same-number candidate from another field is rejected. Pyreinoe and Khadyr'yakhinskoye were not run on production inputs because their reports are absent.",  # noqa: E501
             "- The July source workbook is absent from `data/`; the customer-provided historical 78/66/12 July result is not treated as September baseline and was not rerun.",  # noqa: E501
             "- Structural v3 SHA-256 before/after: `6a7523fdbf524fd9b7f6709d0b3b95279641c706f958c36d388a41c23d610248`. V2 SHA-256: `645a3e5ba9303c42f441598e71fb7da261c9738789638cb5a0e7fceaf97d2578`; rollback SHA-256: `bb046cc365749a546d1bbe141165b08a664ba427ab9493b678ddce008fc85c6a`.",  # noqa: E501

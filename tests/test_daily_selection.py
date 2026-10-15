@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from gdis_loader.domain.models import DailyTelemetryRow, FundCategory, FundWell
 from gdis_loader.matching.normalize import normalize_field_name
 from gdis_loader.service import _daily_record_for_target
@@ -146,3 +148,40 @@ def test_exact_lifecycle_source_is_rejected_if_branch_started_after_report_month
 
     assert selected is None
     assert issue == "DEBIT_SOURCE_LIFECYCLE_PERIOD_MISMATCH"
+
+
+@pytest.mark.parametrize("root", ["71", "113", "9007"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_branch_history_and_cross_field_selection_ignore_row_order(
+    root: str, reverse: bool
+) -> None:
+    from gdis_loader.domain.dates import PartialDate
+    from gdis_loader.domain.models import DatePrecision, SourceLocation, WellEventKind, WellStage
+
+    fund = _fund("Береговое", number=root)
+    other = _fund("Пырейное", number=root)
+    correct = _daily(root, "Береговое", row=37 if reverse else 8, value=123)
+    foreign = _daily(root, "Пырейное", row=8 if reverse else 37, value=999)
+    stage = WellStage(
+        field_name="Береговое",
+        physical_root=root,
+        source_display_well=root,
+        target_well_id=f"{root}_ЗБС",
+        plast="ПК1",
+        event_kind=WellEventKind.ZBS,
+        started_at=PartialDate(2020, 1, 1, DatePrecision.DAY),
+        stage_sequence=1,
+        source_location=SourceLocation("fixture.xlsx", "БЛУ", "I8"),
+        raw_block=(),
+    )
+    rows = (foreign, correct) if reverse else (correct, foreign)
+    selected, issue = _daily_record_for_target(
+        fund,
+        f"{root}_ЗБС",
+        (fund, other),
+        rows,
+        stage=stage,
+    )
+    assert selected == correct and issue is None
+    assert stage.target_well_id == f"{root}_ЗБС"
+    assert selected.target_well_id == root

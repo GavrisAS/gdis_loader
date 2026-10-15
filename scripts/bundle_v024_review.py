@@ -1,4 +1,4 @@
-"""Build a private-release review bundle from source, tests, and sanitized evidence."""
+"""Build a public-safe review bundle from source, tests, and sanitized evidence."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "docs/RELEASE_NOTES_v0.24.md",
     "docs/AUDIT_v0.24_RELEASE.md",
+    "docs/AUDIT_v0.24_AH.md",
     "docs/SOURCE_NOTES.md",
     "src/gdis_loader/domain/models.py",
     "src/gdis_loader/readers/daily.py",

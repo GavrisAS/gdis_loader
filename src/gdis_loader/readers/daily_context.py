@@ -120,11 +120,13 @@ def reference_evidence(
     contexts: dict[str, DayContext],
     source: str,
 ) -> tuple[str, tuple[SourceLocation, ...]] | None:
-    """Accept only a direct dated same-well link with explicit field context."""
+    """Accept only a direct dated same-well AH link with explicit field context."""
     match = _REFERENCE.fullmatch(str(formula))
     if match is None:
         return None
-    sheet, _column, row = match.groups()
+    sheet, column, row = match.groups()
+    if column != "AH":
+        return None
     context = contexts.get(sheet)
     if (
         context is None
@@ -140,6 +142,6 @@ def reference_evidence(
             field_cell,
             context.date_cell,
             f"{context.well_column}{row}",
-            f"{_column}{row}",
+            f"{column}{row}",
         )
     )
