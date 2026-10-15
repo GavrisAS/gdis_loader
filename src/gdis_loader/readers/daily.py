@@ -25,6 +25,7 @@ from gdis_loader.readers.common import (
     parse_number,
     sheet_location,
 )
+from gdis_loader.readers.daily_context import day_contexts, reference_evidence
 
 DAILY_SHEET = "Добыча телеметрия"
 DAILY_EMPTY_ROW_LIMIT = 200
@@ -64,18 +65,50 @@ def read_daily_report(
         ]
     )
     try:
-        if DAILY_SHEET not in workbook.sheetnames:
+        names = [
+            name
+            for name in workbook.sheetnames
+            if name.strip().casefold() == DAILY_SHEET.casefold()
+        ]
+        if len(names) != 1:
+            missing = not names
+            code = "DAILY_SHEET_MISSING" if missing else "DAILY_SHEET_AMBIGUOUS"
+            message = (
+                f"В суточном рапорте отсутствует лист {DAILY_SHEET!r}."
+                if missing
+                else f"В суточном рапорте несколько листов совпадают с {DAILY_SHEET!r}."
+            )
             issues.append(
                 DiagnosticIssue(
-                    code="DAILY_SHEET_MISSING",
+                    code=code,
                     severity=IssueSeverity.ERROR,
-                    message=f"В суточном рапорте отсутствует лист {DAILY_SHEET!r}.",
+                    message=message,
                     source="daily_report",
-                    locations=(sheet_location(source_file, DAILY_SHEET),),
+                    locations=tuple(sheet_location(source_file, name) for name in names)
+                    or (sheet_location(source_file, DAILY_SHEET),),
                 )
             )
             return (), tuple(issues)
-        worksheet = workbook[DAILY_SHEET]
+        sheet_name = names[0]
+        worksheet = workbook[sheet_name]
+        formulas = load_workbook(path, read_only=True, data_only=False, keep_links=False)
+        try:
+            contexts = day_contexts(formulas)
+            formula_rows = list(formulas[sheet_name].iter_rows(max_col=100, values_only=True))
+        finally:
+            formulas.close()
+        months = {context.report_date.strftime("%Y-%m") for context in contexts.values()}
+        if len(months) > 1:
+            return (), (
+                DiagnosticIssue(
+                    code="DAILY_PERIOD_CONFLICT",
+                    severity=IssueSeverity.ERROR,
+                    message="Датированные вкладки рапорта относятся к разным месяцам.",
+                    source="daily_report",
+                    locations=(sheet_location(source_file, sheet_name),),
+                ),
+            )
+        report_month = next(iter(months), None)
         header = _find_daily_header(worksheet)
         if header is None:
             issues.append(
@@ -99,6 +132,15 @@ def read_daily_report(
                 continue
             if 1 <= day <= 31:
                 day_columns.append((day, column_index))
+        if report_month is not None:
+            import calendar
+
+            year, month = map(int, report_month.split("-"))
+            day_columns = [
+                (day, column)
+                for day, column in day_columns
+                if day <= calendar.monthrange(year, month)[1]
+            ]
         if len(day_columns) < 28:
             issues.append(
                 DiagnosticIssue(
@@ -119,6 +161,7 @@ def read_daily_report(
         invalid_samples: list[str] = []
         missing_counts: Counter[str] = Counter()
         invalid_locations: list[SourceLocation] = []
+        cache_missing_locations: list[SourceLocation] = []
         for row_number, row in enumerate(
             worksheet.iter_rows(
                 min_row=header_row + 1,
@@ -130,6 +173,7 @@ def read_daily_report(
         ):
             values = tuple(row)
             field_value = values[0] if values else None
+            collector_value = display_value(field_value) if field_value is not None else None
             well_value = values[1] if len(values) > 1 else None
             if field_value is None and well_value is None:
                 blank_streak += 1
@@ -140,18 +184,46 @@ def read_daily_report(
             raw_field = as_text(field_value)
             raw_well = display_value(well_value) if well_value is not None else None
             normalized = normalize_well_id(raw_well) if raw_well is not None else None
+            evidence: list[SourceLocation] = []
+            fields: set[str] = set()
+            linked_days = 0
+            for day, column in day_columns:
+                formula = formula_rows[row_number - 1][column]
+                proof = reference_evidence(
+                    formula,
+                    day,
+                    normalized.target_well_id if normalized else None,
+                    contexts,
+                    source_file,
+                )
+                if proof is not None:
+                    fields.add(proof[0])
+                    evidence.extend(proof[1])
+                    linked_days += 1
+            # ГСК is a collector, never a field. Only complete, consistent links
+            # across the reporting period can establish this row's field scope.
+            raw_field = (
+                next(iter(fields)) if len(fields) == 1 and linked_days == len(day_columns) else None
+            )
+            if raw_field is None:
+                evidence.clear()
             daily_values: list[float | None] = []
             for _day, column_index in day_columns:
                 raw_value = values[column_index] if column_index < len(values) else None
                 parsed = parse_number(raw_value)
+                formula = formula_rows[row_number - 1][column_index]
+                if raw_value is None and isinstance(formula, str) and formula.startswith("="):
+                    cache_missing_locations.append(
+                        cell_location(source_file, sheet_name, row_number, column_index)
+                    )
                 if raw_value is not None and parsed is None:
+                    invalid_locations.append(
+                        cell_location(source_file, sheet_name, row_number, column_index)
+                    )
                     if is_missing_measurement(raw_value):
                         missing_counts["daily"] += 1
                     else:
                         invalid_counts["daily"] += 1
-                        invalid_locations.append(
-                            cell_location(source_file, DAILY_SHEET, row_number, column_index)
-                        )
                         if len(invalid_samples) < 3:
                             invalid_samples.append(repr(raw_value))
                 daily_values.append(parsed)
@@ -164,7 +236,11 @@ def read_daily_report(
                     source_row=row_number,
                     daily_values=tuple(daily_values),
                     source_file=source_file,
-                    source_sheet=DAILY_SHEET,
+                    source_sheet=sheet_name,
+                    field_evidence=tuple(dict.fromkeys(evidence)),
+                    report_month=report_month,
+                    field_scope_invalid=report_month is not None and raw_field is None,
+                    raw_collector_id=collector_value,
                     field_cell=coordinate(row_number, 0),
                     well_cell=coordinate(row_number, 1),
                     daily_cells=tuple(
@@ -195,6 +271,16 @@ def read_daily_report(
                     ),
                     source="daily_report",
                     locations=tuple(invalid_locations),
+                )
+            )
+        if cache_missing_locations:
+            issues.append(
+                DiagnosticIssue(
+                    code="DAILY_FORMULA_CACHE_MISSING",
+                    severity=IssueSeverity.INFO,
+                    message="Формулы без сохранённого результата прочитаны как пропуски.",
+                    source="daily_report",
+                    locations=tuple(cache_missing_locations),
                 )
             )
         return tuple(rows), tuple(issues)

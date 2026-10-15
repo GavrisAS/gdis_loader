@@ -24,7 +24,7 @@ SOURCE_FILES: tuple[tuple[str, str], ...] = (
     ("lha", "База ЛХА_Итог!.xlsm"),
     ("well_history", "База по скважинам.xlsx"),
     ("research_status", "Статус исследований_2026.xlsx"),
-    ("daily_report", "07.2026 Cуточный рапорт БГП_полный.xlsm"),
+    ("daily_report", "09.2026 Cуточный рапорт БГП.xlsm"),
 )
 
 

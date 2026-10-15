@@ -1,8 +1,11 @@
-# Current verification — v0.23 / structural v3
+# Current verification — v0.24 / structural v3
 
 Local gates: `uv sync --locked`, `make check` (Ruff, format, ty, pytest).
-Current complete evidence: [AUDIT_v0.23.md](AUDIT_v0.23.md) and the final review bundle.
-The regression suite grows from 516 to 569 cases; none is removed.
+Current debit-source qualification: [AUDIT_v0.24_RELEASE.md](AUDIT_v0.24_RELEASE.md).
+Historical template/runtime evidence: [AUDIT_v0.23.md](AUDIT_v0.23.md).
+The v0.24 regression suite includes September reader, field-scope, lifecycle and
+real-source checks. The previous 569 v0.23 tests remain in the suite; the final
+count and gates are recorded in the v0.24 audit.
 
 Structural v3 exact five-part gate preserves all formula sheets, λ/rank, charts,
 styles, protection, calculation capacity 1000 and auto-recalculation. Writer

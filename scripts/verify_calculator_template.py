@@ -1,4 +1,4 @@
-"""Local three-field acceptance evidence without production row dumps."""
+"""Local Beregovoe acceptance evidence without production row dumps."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ def verify(candidate: Path, data: Path, directory: Path) -> None:
         fund=data / "Фонд 2026 на 01.08.2026.xlsx",
         gdi=data / "Сводная таблица ГДИ.xlsx",
         lha=data / "База ЛХА_Итог!.xlsm",
-        daily_report=data / "07.2026 Cуточный рапорт БГП_полный.xlsm",
+        daily_report=data / "09.2026 Cуточный рапорт БГП.xlsm",
         well_history=data / "База по скважинам.xlsx",
         research_status=data / "Статус исследований_2026.xlsx",
         output=None,
     )
-    today = date(2026, 10, 2)
+    today = date(2026, 10, 12)
     validation = run_validate(paths, directory / "validate.log", calculation_date=today)
     assert not validation.has_errors
     evidence: dict[str, object] = {
@@ -41,12 +41,8 @@ def verify(candidate: Path, data: Path, directory: Path) -> None:
         "validation_errors": validation.error_count,
     }
     fields = {}
-    examples = {
-        "Береговое": {"12": 21, "13": 21, "21": 19, "22": 19},
-        "Пырейное": {"22": 11, "62": 4},
-        "Хадырьяхинское": {},
-    }
-    for field, expected in (("Береговое", 78), ("Пырейное", 5), ("Хадырьяхинское", 10)):
+    examples = {"12": 21, "13": 21, "21": 19, "22": 19}
+    for field, expected in (("Береговое", 78),):
         output = directory / f"UPDATED_{field}.xlsx"
         result = run_update(
             replace(paths, output=output),
@@ -77,7 +73,7 @@ def verify(candidate: Path, data: Path, directory: Path) -> None:
                 if r[headers.index("Скважина")] is not None
             }
             assert len(rows) == expected
-            for well, count in examples[field].items():
+            for well, count in examples.items():
                 assert rows[well][headers.index("Количество ГДИ")] == count
         finally:
             workbook.close()

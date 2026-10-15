@@ -1,9 +1,13 @@
 # Native Excel acceptance — structural v3 PENDING
 
 Current candidate: `templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx`.
-Loader target: v0.23. Status: AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE;
+Loader target: v0.24. Status: AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE;
 canonical=false. Accepted structural v2 has native PASS confirmed 2026-10-07.
 That historical acceptance does not cover the changed v3 workbook.
+
+The v0.24 debit correction does not change structural v3. Its production
+qualification is recorded in `AUDIT_v0.24_RELEASE.md`; native Excel acceptance
+for v3 remains an independent pending gate.
 
 Run the Windows loader against v3 and each local production field. Keep source
 workbooks and filled production outputs private. The local review bundle includes

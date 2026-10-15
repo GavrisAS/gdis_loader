@@ -166,6 +166,13 @@ class ServiceResult:
                     f"Без выбранных значений ЛХА: {report.without_lha}",
                     f"Подготовлено строк: {report.rows_prepared}",
                     f"Записано строк: {report.rows_written}",
+                    f"Отчётный месяц дебита: {report.debit_report_month or 'не определён'}",
+                    f"Дебит заполнен / пуст: {report.debit_filled} / {report.debit_blank}",
+                    f"Разрешено прежних неоднозначностей: {report.debit_resolved_ambiguous}",
+                    f"Осталось неоднозначных: {report.debit_still_ambiguous}",
+                    f"Нет строки источника: {report.debit_missing_source}",
+                    f"Нет валидных рабочих дней: {report.debit_no_valid_days}",
+                    f"SHA-256 суточного рапорта: {report.debit_source_sha256 or 'не определён'}",
                 )
             )
         lines.extend((f"Ошибок: {self.error_count}", f"Предупреждений: {self.warning_count}"))
@@ -720,16 +727,62 @@ def _gdi_locations(record: GdiRecord, *cell_names: str) -> tuple[SourceLocation,
     )
 
 
+_DEBIT_MATCH_MESSAGES = {
+    "DEBIT_SOURCE_FIELD_AMBIGUOUS": (
+        "Поле candidate строки нельзя определить однозначно; дебит оставлен пустым."
+    ),
+    "DEBIT_SOURCE_FIELD_UNPROVEN": (
+        "Ссылки суточной телеметрии не подтверждают поле и скважину; дебит оставлен пустым."
+    ),
+    "DEBIT_SOURCE_FIELD_MISMATCH": (
+        "В суточном рапорте есть строка только другого месторождения; дебит оставлен пустым."
+    ),
+    "DEBIT_SOURCE_ROW_AMBIGUOUS": (
+        "В текущем месторождении найдено несколько строк той же идентичности; "
+        "дебит оставлен пустым."
+    ),
+    "DEBIT_SOURCE_ROW_MISSING": (
+        "В суточном рапорте нет строки текущей скважины; дебит оставлен пустым."
+    ),
+    "DEBIT_SOURCE_LIFECYCLE_PERIOD_MISMATCH": (
+        "Текущая история скважины началась после отчетного месяца; дебит оставлен пустым."
+    ),
+}
+
+
+def _debit_match_message(code: str) -> str:
+    return _DEBIT_MATCH_MESSAGES.get(code, "Строка суточного рапорта не сопоставлена.")
+
+
 def _daily_record_for_target(
     fund_well: FundWell,
     target_well_id: str,
     all_fund_wells: tuple[FundWell, ...],
     daily_rows: tuple[DailyTelemetryRow, ...],
+    *,
+    stage: WellStage | None = None,
 ) -> tuple[DailyTelemetryRow | None, str | None]:
     """Select one daily row without joining the same number across fields."""
 
     source_matches = tuple(item for item in daily_rows if item.target_well_id == target_well_id)
-    if not source_matches and fund_well.base_well_id is not None:
+    if (
+        not source_matches
+        and fund_well.base_well_id is not None
+        and normalize_well_id(target_well_id).recognized_variant in {None, "ЗБС", "ПВЛГ", "ПНЛГ"}
+        and (
+            "_" not in target_well_id
+            or normalize_well_id(target_well_id).recognized_variant is not None
+        )
+        and len(
+            {
+                item.target_well_id
+                for item in all_fund_wells
+                if item.base_well_id == fund_well.base_well_id
+                and item.normalized_field == fund_well.normalized_field
+            }
+        )
+        == 1
+    ):
         source_matches = tuple(
             item for item in daily_rows if item.target_well_id == fund_well.base_well_id
         )
@@ -752,6 +805,8 @@ def _daily_record_for_target(
     ):
         return None, "DEBIT_SOURCE_FIELD_MISMATCH"
     else:
+        if any(item.field_scope_invalid for item in source_matches):
+            return None, "DEBIT_SOURCE_FIELD_UNPROVEN"
         related_fields = {
             item.normalized_field
             for item in all_fund_wells
@@ -762,7 +817,16 @@ def _daily_record_for_target(
 
     if len(source_matches) != 1:
         return None, "DEBIT_SOURCE_ROW_AMBIGUOUS"
-    return source_matches[0], None
+    selected = source_matches[0]
+    if selected.report_month and stage is not None:
+        import calendar
+
+        year, month = map(int, selected.report_month.split("-"))
+        period_end = date(year, month, calendar.monthrange(year, month)[1])
+        started = effective_date(stage.started_at)
+        if started is None or started > period_end:
+            return None, "DEBIT_SOURCE_LIFECYCLE_PERIOD_MISMATCH"
+    return selected, None
 
 
 def _build_target_rows(
@@ -1471,6 +1535,7 @@ def _build_target_rows(
                 source_identity,
                 fund.wells,
                 daily_rows,
+                stage=lifecycle.stage,
             )
             debit_value: float | None = None
             if daily_issue is None and daily_item is not None:
@@ -1522,6 +1587,31 @@ def _build_target_rows(
                         "valid_working_days": valid_day_count,
                         "working_day_min_rate": criteria.gas_rate_working_day_min_rate,
                         "aggregation": "arithmetic_mean",
+                        "report_month": daily_item.report_month,
+                        "source_well": daily_item.target_well_id,
+                        "selected_field": daily_item.raw_field_name,
+                        "field_evidence": [
+                            location.to_dict() for location in daily_item.field_evidence
+                        ],
+                        "identity_rule": "resolved_current_history_unique_fund_root"
+                        if daily_item.target_well_id != source_identity
+                        else "exact_identity",
+                        "identity_evidence": {
+                            "base_well_id": fund_well.base_well_id,
+                            "target_well_id": effective_identity,
+                            "fund_locations": [
+                                location.to_dict() for location in fund_well.locations
+                            ],
+                            "history_event": lifecycle.stage.event_kind.value
+                            if lifecycle.stage
+                            else None,
+                            "history_start": lifecycle.stage.started_at.to_dict()
+                            if lifecycle.stage
+                            else None,
+                            "history_location": lifecycle.stage.source_location.to_dict()
+                            if lifecycle.stage
+                            else None,
+                        },
                     }
             else:
                 report.debit_blank += 1
@@ -1532,13 +1622,25 @@ def _build_target_rows(
                         DiagnosticIssue(
                             code=code,
                             severity=IssueSeverity.WARNING,
-                            message=(
-                                "Строка суточного рапорта не сопоставлена однозначно с текущей "
-                                "скважиной; Дебит оставлен пустым."
-                            ),
+                            message=_debit_match_message(code),
                             source="daily_report",
                             well_id=fund_well.base_well_id,
-                            locations=fund_well.locations,
+                            locations=_unique_locations(
+                                (
+                                    *fund_well.locations,
+                                    *(
+                                        location
+                                        for item in daily_rows
+                                        if item.base_well_id == fund_well.base_well_id
+                                        for location in (
+                                            *item.field_evidence,
+                                            SourceLocation(
+                                                item.source_file, item.source_sheet, item.well_cell
+                                            ),
+                                        )
+                                    ),
+                                )
+                            ),
                         ),
                     ),
                 )
@@ -1997,6 +2099,7 @@ def _build_target_rows(
                 source_identity or target_identity or fund_well.raw_display,
                 fund.wells,
                 daily_rows,
+                stage=lifecycle.stage,
             )
             if daily_issue is None and daily_item is not None:
                 debit_value = mean_working_day_rate(daily_item.daily_values, criteria)
@@ -2025,6 +2128,13 @@ def _build_target_rows(
                                         daily_item.source_sheet,
                                         daily_item.well_cell,
                                     ),
+                                    *daily_item.field_evidence,
+                                    *(
+                                        SourceLocation(
+                                            daily_item.source_file, daily_item.source_sheet, cell
+                                        )
+                                        for cell in daily_item.daily_cells
+                                    ),
                                 ),
                             ),
                         ),
@@ -2051,6 +2161,31 @@ def _build_target_rows(
                         valid_working_days=valid_day_count,
                         working_day_min_rate=criteria.gas_rate_working_day_min_rate,
                         aggregation="arithmetic_mean",
+                        report_month=daily_item.report_month,
+                        source_well=daily_item.target_well_id,
+                        selected_field=daily_item.raw_field_name,
+                        field_evidence=[
+                            location.to_dict() for location in daily_item.field_evidence
+                        ],
+                        identity_rule="resolved_current_history_unique_fund_root"
+                        if daily_item.target_well_id != target_identity
+                        else "exact_identity",
+                        identity_evidence={
+                            "base_well_id": fund_well.base_well_id,
+                            "target_well_id": target_identity,
+                            "fund_locations": [
+                                location.to_dict() for location in fund_well.locations
+                            ],
+                            "history_event": lifecycle.stage.event_kind.value
+                            if lifecycle.stage
+                            else None,
+                            "history_start": lifecycle.stage.started_at.to_dict()
+                            if lifecycle.stage
+                            else None,
+                            "history_location": lifecycle.stage.source_location.to_dict()
+                            if lifecycle.stage
+                            else None,
+                        },
                     )
             else:
                 report.debit_blank += 1
@@ -2061,13 +2196,25 @@ def _build_target_rows(
                         DiagnosticIssue(
                             code=code,
                             severity=IssueSeverity.WARNING,
-                            message=(
-                                "Строка суточного рапорта не сопоставлена однозначно с текущей "
-                                "скважиной; Дебит оставлен пустым."
-                            ),
+                            message=_debit_match_message(code),
                             source="daily_report",
                             well_id=fund_well.base_well_id,
-                            locations=fund_well.locations,
+                            locations=_unique_locations(
+                                (
+                                    *fund_well.locations,
+                                    *(
+                                        location
+                                        for item in daily_rows
+                                        if item.base_well_id == fund_well.base_well_id
+                                        for location in (
+                                            *item.field_evidence,
+                                            SourceLocation(
+                                                item.source_file, item.source_sheet, item.well_cell
+                                            ),
+                                        )
+                                    ),
+                                )
+                            ),
                         ),
                     ),
                 )
@@ -2326,6 +2473,17 @@ def _prepare(
     daily_rows, daily_issues = read_daily_report(paths.daily_report)
     _append_issues(report, daily_issues)
     report.fund_date = fund.fund_date
+    report.debit_source_sha256 = next(
+        (
+            entry["sha256"]
+            for entry in report.source_manifest["sources"]
+            if entry["role"] == "daily_report"
+        ),
+        None,
+    )
+    report.debit_report_month = next(
+        (item.report_month for item in daily_rows if item.report_month), None
+    )
     _report_progress(progress, 75, "Сопоставление жизненных циклов")
     target_rows = _build_target_rows(
         fund,
@@ -2337,6 +2495,32 @@ def _prepare(
         research_status,
         criteria,
         daily_rows,
+    )
+    report.debit_no_valid_days = sum(i.code == "DEBIT_NO_VALID_WORKING_DAYS" for i in report.issues)
+    report.debit_missing_source = sum(
+        i.code
+        in {
+            "DEBIT_SOURCE_ROW_MISSING",
+            "DEBIT_SOURCE_FIELD_MISMATCH",
+            "DEBIT_SOURCE_FIELD_UNPROVEN",
+        }
+        for i in report.issues
+    )
+    report.debit_still_ambiguous = sum(
+        "AMBIGUOUS" in i.code and i.source == "daily_report" for i in report.issues
+    )
+    report.debit_resolved_ambiguous = sum(
+        p["field"] == "Дебит"
+        and bool(p["details"].get("field_evidence"))
+        and len(
+            {
+                w.normalized_field
+                for w in fund.wells
+                if w.base_well_id == normalize_well_id(p["well_id"]).base_well_id
+            }
+        )
+        > 1
+        for p in report.field_provenance
     )
     _report_progress(progress, 85, "Подготовка итоговых строк")
     return target_rows, fund, well_history

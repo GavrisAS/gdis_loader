@@ -4,10 +4,10 @@ status = "AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE"
 canonical = false
 storage = "B: separate GitHub Release assets; also tracked in Git"
 loader_baseline = "v0.22"
-loader_release_target = "v0.23"
+loader_release_target = "v0.24"
 baseline_commit = "3490441a13d6c36849754a404d13b1933e41c0ed"
 capacity = 1000
-automated_acceptance = "PASS: uv sync --locked; make check; 569 passed; exact OOXML five-part gate"
+automated_acceptance = "PASS: uv sync --locked; make check; 581 passed; exact v3 SHA preserved"
 native_excel_acceptance = "PENDING: structural v3 requires new human Microsoft Excel acceptance"
 
 [source]

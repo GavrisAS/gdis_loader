@@ -66,7 +66,7 @@ uv run gdis-loader-cli validate \
   --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
   --gdi "data/Сводная таблица ГДИ.xlsx" \
   --lha "data/База ЛХА_Итог!.xlsm" \
-  --daily-report "data/07.2026 Cуточный рапорт БГП_полный.xlsm" \
+  --daily-report "data/09.2026 Cуточный рапорт БГП.xlsm" \
   --well-history "data/База по скважинам.xlsx" \
   --research-status "data/Статус исследований_2026.xlsx"
 
@@ -75,7 +75,7 @@ uv run gdis-loader-cli update \
   --fund "data/Фонд 2026 на 01.08.2026.xlsx" \
   --gdi "data/Сводная таблица ГДИ.xlsx" \
   --lha "data/База ЛХА_Итог!.xlsm" \
-  --daily-report "data/07.2026 Cуточный рапорт БГП_полный.xlsm" \
+  --daily-report "data/09.2026 Cуточный рапорт БГП.xlsm" \
   --well-history "data/База по скважинам.xlsx" \
   --research-status "data/Статус исследований_2026.xlsx" \
   --field Береговое
@@ -261,15 +261,23 @@ Strict runtime audit повторно проверяет все 7 sources и gen
 Structural μ/λ migration реализована offline; native Excel acceptance ожидается.
 
 
-## Structural template v3 candidate — loader v0.23
+## Structural template v3 candidate — loader v0.24
 
 v3 удаляет только Расходомер из Данные/tblData. Остальные поля сохранены.
 Предыдущий v2 принят в native Excel 2026-10-07 и сохранён побайтово; его PASS
 не распространяется на v3. Capacity v2/v3 — 1000, archive v1 — 100.
 Runtime пишет только Данные/tblData; формулы и настройки не меняет.
 
+Дебит в v0.24 читается из `09.2026 Cуточный рапорт БГП.xlsm`, листа
+`Добыча телеметрия`. Field scope следует из прямых дневных ссылок на датированные
+листы, их подтвержденного заголовка, даты и номера скважины. Колонка `ГСК` —
+номер коллектора, не месторождение. Среднее положительных рабочих дней и
+порог `0.0` сохранены. Сентябрьский reconciliation: 75/78 заполнено; три пустых
+из-за отсутствия валидных положительных дней. Полные приватные доказательства
+находятся в `artifacts/v0.24/` и не включают исходные книги в release.
+
 Статус v3: **AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE**, canonical=false.
-[Отчёт v0.23](docs/AUDIT_v0.23.md), [native checklist](docs/CALCULATOR_NATIVE_EXCEL_SMOKE.md),
+[Отчёт v0.23 о template v3](docs/AUDIT_v0.23.md), [production audit v0.24](docs/AUDIT_v0.24_RELEASE.md), [native checklist](docs/CALCULATOR_NATIVE_EXCEL_SMOKE.md),
 [hash/version metadata](docs/CALCULATOR_TEMPLATE_VERSION.toml).
 
 ```bash
@@ -277,7 +285,7 @@ sha256sum -c templates/calculator/SHA256SUMS.txt
 uv run python scripts/migrate_calculator_v3.py templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx /tmp/structural-v3.xlsx --diff /tmp/v3-diff.json
 ```
 
-Release v0.23 candidate предоставляет Windows standalone ZIP, v3, accepted v2,
+Release v0.24 candidate предоставляет Windows standalone ZIP, review bundle, SHA-256, v3, accepted v2,
 archive v1 и checksums отдельными assets. Исходники и production outputs не входят
 в release. Для rollback выбрать предыдущий workbook через Обзор.
 

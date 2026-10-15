@@ -1,8 +1,9 @@
-# Current acceptance — structural v3 / loader v0.23
+# Current acceptance — structural v3 / loader v0.24
 
 v3: AUTOMATED PASS / NATIVE EXCEL PENDING / CANDIDATE, canonical=false.
 New physical column deletion requires independent Microsoft Excel acceptance.
-Current evidence: AUDIT_v0.23.md; checklist: CALCULATOR_NATIVE_EXCEL_SMOKE.md.
+Current loader evidence: AUDIT_v0.24_RELEASE.md; historical calculator evidence:
+AUDIT_v0.23.md; checklist: CALCULATOR_NATIVE_EXCEL_SMOKE.md.
 The accepted v2 and its historical evidence below remain unchanged.
 
 # Acceptance update — v0.22

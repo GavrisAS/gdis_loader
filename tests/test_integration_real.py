@@ -20,7 +20,7 @@ REAL_FILES = (
     DATA_ROOT / "Фонд 2026 на 01.08.2026.xlsx",
     DATA_ROOT / "Сводная таблица ГДИ.xlsx",
     DATA_ROOT / "База ЛХА_Итог!.xlsm",
-    DATA_ROOT / "07.2026 Cуточный рапорт БГП_полный.xlsm",
+    DATA_ROOT / "09.2026 Cуточный рапорт БГП.xlsm",
     DATA_ROOT / "База по скважинам.xlsx",
     DATA_ROOT / "Статус исследований_2026.xlsx",
 )
@@ -81,9 +81,9 @@ def test_real_bundle_update(tmp_path: Path) -> None:
     assert result.report.matched == 78
     assert result.report.ambiguous == 0
     assert result.report.no_gdi == 0
-    assert result.report.debit_filled == 66
-    assert result.report.debit_blank == 12
-    assert result.report.debit_valid_day_count == 1580
+    assert result.report.debit_filled == 75
+    assert result.report.debit_blank == 3
+    assert result.report.debit_valid_day_count == 2205
     assert result.report.gdm_filled_yes == 3
     assert result.report.gdm_filled_no == 38
     assert result.report.gdm_blank == 37

@@ -93,11 +93,18 @@ the semantic reader limits its scan and reads only the detected required columns
 - ЛХА использует лист `БД Сибнефтегаз`, field/well/plast/timestamp/Cl/VGF. Для
   одинаковых metric+timestamp берётся максимум valid numeric value; в этом run
   разрешено 170 duplicate groups. Ноль остаётся числом.
-- Суточный рапорт использует лист `Добыча телеметрия`; дневные колонки читаются
-  за месяц. Working-day rule: numeric rate строго больше configurable threshold,
-  default 0; среднее арифметическое по валидным дням. В июльском production
-  bundle нашли 121 telemetry row. Источник не всегда даёт однозначный field
-  assignment; 12 target rows оставили Debit blank с diagnostic.
+- Для расчёта дебита основной источник — `09.2026 Cуточный рапорт БГП.xlsm`,
+  лист `Добыча телеметрия` (case-insensitive exact sheet match). Заголовки имеют
+  31 дневную колонку, но проверенные датированные вкладки `01`–`30` подтверждают
+  сентябрь 2026; колонка 31 исключается. В 121 telemetry rows колонка `ГСК`
+  обозначает номер газосборного коллектора, а не месторождение. Field scope
+  подтверждается прямыми формулами ссылок на строки датированных дневных листов,
+  заголовком промысла, датой и совпавшими well identities. Для cache-less formulas
+  значения остаются missing. Агрегация сохраняет действующее среднее числовых
+  дневных ставок строго выше configurable threshold, default 0. Production
+  reconciliation v0.24 — локально в ignored `artifacts/v0.24/reconciliation.json`;
+  он использует только сентябрьский источник. Июльский рапорт относится к
+  историческому запуску v0.23 и не является текущим источником.
 - Ошибки/пустые/служебные values не включаются в среднее; данные источника не
   изменяются.
 

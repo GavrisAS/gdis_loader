@@ -522,6 +522,10 @@ class DailyTelemetryRow:
     well_cell: str | None = None
     daily_cells: tuple[str, ...] = ()
     target_well_id: str | None = None
+    field_evidence: tuple[SourceLocation, ...] = ()
+    report_month: str | None = None
+    field_scope_invalid: bool = False
+    raw_collector_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +695,12 @@ class LoadReport:
     debit_filled: int = 0
     debit_blank: int = 0
     debit_valid_day_count: int = 0
+    debit_report_month: str | None = None
+    debit_source_sha256: str | None = None
+    debit_resolved_ambiguous: int = 0
+    debit_still_ambiguous: int = 0
+    debit_missing_source: int = 0
+    debit_no_valid_days: int = 0
     warnings: list[str] = field(default_factory=list)
     issues: list[DiagnosticIssue] = field(default_factory=list)
     intentionally_blank_fields: tuple[str, ...] = INTENTIONALLY_BLANK_FIELDS

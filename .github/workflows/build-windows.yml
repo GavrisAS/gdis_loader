@@ -87,11 +87,29 @@ jobs:
         shell: pwsh
         run: ./scripts/build_windows.ps1 -BuildVersion "${{ needs.version.outputs.build_version }}"
 
-      - name: Upload standalone ZIP
+      - name: Create release checksums and review bundle
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+        run: |
+          $zip = "dist/GDIS_DataLoader-v$env:BUILD_VERSION-windows-x64.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $zip)" | Set-Content -Path "$zip.sha256" -Encoding ascii
+          $review = "dist/GDIS_v$env:BUILD_VERSION-review.zip"
+          uv run python scripts/bundle_v024_review.py --version $env:BUILD_VERSION --output $review
+          if ($LASTEXITCODE -ne 0) { throw "Review bundle generation failed" }
+          $reviewHash = (Get-FileHash -Algorithm SHA256 $review).Hash.ToLowerInvariant()
+          "$reviewHash  $(Split-Path -Leaf $review)" | Set-Content -Path "$review.sha256" -Encoding ascii
+
+      - name: Upload standalone ZIP and review evidence
         uses: actions/upload-artifact@v4
         with:
           name: GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64
-          path: dist/GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64.zip
+          path: |
+            dist/GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64.zip
+            dist/GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64.zip.sha256
+            dist/GDIS_v${{ needs.version.outputs.build_version }}-review.zip
+            dist/GDIS_v${{ needs.version.outputs.build_version }}-review.zip.sha256
           if-no-files-found: error
 
   release:
@@ -144,16 +162,21 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           TAG: ${{ needs.version.outputs.release_tag }}
           ZIP_PATH: release-assets/GDIS_DataLoader-v${{ needs.version.outputs.build_version }}-windows-x64.zip
+          REVIEW_PATH: release-assets/GDIS_v${{ needs.version.outputs.build_version }}-review.zip
+          REVIEW_HASH_PATH: release-assets/GDIS_v${{ needs.version.outputs.build_version }}-review.zip.sha256
         run: |
           set -euo pipefail
           test -f "$ZIP_PATH"
+          test -f "$ZIP_PATH.sha256"
+          test -f "$REVIEW_PATH"
+          test -f "$REVIEW_HASH_PATH"
           tagged_sha=$(git ls-remote --refs origin "refs/tags/$TAG" | awk '{print $1}')
           [[ "$tagged_sha" == "$TARGET_SHA" ]]
           release_flags=()
           if ! python3 -c 'import tomllib; from pathlib import Path; m=tomllib.loads(Path("docs/CALCULATOR_TEMPLATE_VERSION.toml").read_text()); raise SystemExit(0 if m["canonical"] else 1)'; then
             release_flags+=(--prerelease)
           fi
-          gh release create "$TAG" "$ZIP_PATH" "${release_flags[@]}" \
+          gh release create "$TAG" "$ZIP_PATH" "$ZIP_PATH.sha256" "$REVIEW_PATH" "$REVIEW_HASH_PATH" "${release_flags[@]}" \
             templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v3.xlsx \
             templates/calculator/GDIS_Rating_Calculator_STRUCTURAL_v2.xlsx \
             templates/calculator/archive/GDIS_Rating_Calculator_v0.19_pre_structural.xlsx \
@@ -162,6 +185,5 @@ jobs:
             --verify-tag \
             --target "$TARGET_SHA" \
             --title "GDIS Data Loader $TAG" \
-            --notes-file templates/calculator/README.md \
-            --generate-notes
+            --notes-file docs/RELEASE_NOTES_v0.24.md
           gh release view "$TAG" --json url --jq .url
